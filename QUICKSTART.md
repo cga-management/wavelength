@@ -26,23 +26,44 @@ model is [iac/IDENTITY.md](iac/IDENTITY.md).
 ## Create your private copy
 
 Do **not** use GitHub's Fork button: a fork of a public repo stays public, cannot be made
-private, and trips the private-repo guard on every push. Instead create your own private
-repo and mirror the canonical public template (`cga-management/wavelength`) into it.
-Replace `your-org` with your own GitHub org or username:
+private, and trips the private-repo guard on every push.
+
+Wavelength is a **template repository**, so the simplest path is one command. Name the
+repo whatever you like (e.g. `ai-labs-wavelength`) - the name is free; you just pass that
+same slug as `REPO` at bootstrap. Replace `your-org` with your GitHub org or username:
 
 ```bash
-gh repo create your-org/wavelength --private
-git clone --bare https://github.com/cga-management/wavelength.git
-cd wavelength.git && git push --mirror https://github.com/your-org/wavelength.git
-cd .. && rm -rf wavelength.git
-git clone https://github.com/your-org/wavelength.git && cd wavelength
+gh repo create your-org/ai-labs-wavelength --private --template cga-management/wavelength
+```
+
+(Or in the web UI: open `cga-management/wavelength`, click **Use this template -> Create a
+new repository**, and choose **Private**.) Then clone it and add the template as an
+`upstream` remote so you can pull future updates:
+
+```bash
+git clone https://github.com/your-org/ai-labs-wavelength.git && cd ai-labs-wavelength
 git remote add upstream https://github.com/cga-management/wavelength.git
-# later, to track template updates: git fetch upstream && git merge upstream/main
 ```
 
 Verify it is private (the guard's local check): `gh repo view --json isPrivate -q .isPrivate`
 must print `true`. Leave the `WAVELENGTH_UPSTREAM_SLUG` repo variable unset - it only
 exempts the canonical public template from the guard, not your private copy.
+
+### Alternative: mirror (preserves full history)
+
+"Use this template" starts your repo with a fresh history, which makes pulling later
+template updates awkward (`git merge` sees unrelated histories). If you want clean
+upstream tracking, mirror instead - more steps, but `git fetch upstream && git merge
+upstream/main` stays clean afterwards:
+
+```bash
+gh repo create your-org/ai-labs-wavelength --private
+git clone --bare https://github.com/cga-management/wavelength.git
+cd wavelength.git && git push --mirror https://github.com/your-org/ai-labs-wavelength.git
+cd .. && rm -rf wavelength.git
+git clone https://github.com/your-org/ai-labs-wavelength.git && cd ai-labs-wavelength
+git remote add upstream https://github.com/cga-management/wavelength.git
+```
 
 ## Identity (bring your own OIDC IdP)
 
