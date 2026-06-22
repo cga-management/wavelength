@@ -1,6 +1,6 @@
 ---
 name: wavelength-conformance
-description: Conformance checks a Wavelength instance must pass before and during operation. Use when standing up a fork, before the first push, or when diagnosing a failing conformance gate. Covers the must-be-private-repo guardrail and the baseline repo checks.
+description: Conformance checks a Wavelength instance must pass before and during operation. Use when standing up a private copy, before the first push, or when diagnosing a failing conformance gate. Covers the must-be-private-repo guardrail and the baseline repo checks.
 ---
 
 # Wavelength conformance
@@ -12,8 +12,8 @@ in lockstep.
 
 ## Must-be-private guardrail (run this first)
 
-Your fork holds your own org, project, billing and identity-provider identifiers. A
-**public** fork leaks your cloud estate, so Wavelength must run from a **private** repo.
+Your private copy holds your own org, project, billing and identity-provider identifiers.
+A **public** repo leaks your cloud estate, so Wavelength must run from a **private** repo.
 The only legitimate public repo is the canonical upstream template.
 
 Check it locally before your first push (needs the GitHub CLI, authenticated):
@@ -30,8 +30,8 @@ fi
 ```
 
 CI exemption for the canonical public template: set a repository variable
-`WAVELENGTH_UPSTREAM_SLUG` to that repo's own `owner/name`. Forks leave it unset and must
-be private.
+`WAVELENGTH_UPSTREAM_SLUG` to that repo's own `owner/name`. Private copies leave it unset
+and must be private.
 
 ## Baseline repo checks (mirrors conformance.yml)
 

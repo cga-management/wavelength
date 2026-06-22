@@ -1,15 +1,15 @@
 # Wavelength
 
 Wavelength is an **open-source runbook for standing up your own AI platform on your own
-cloud**. You fork this repo, supply your own cloud and identity provider, and run the
+cloud**. You create a private copy of this repo, supply your own cloud and identity provider, and run the
 infrastructure-as-code to deploy a private, SSO-gated platform: a model gateway, a wiki,
 and the shared kit apps build on. It is a runbook you operate yourself, not a managed
 service anyone runs for you.
 
-> **Fork into a PRIVATE repository.** Your fork will hold your own org, project, billing
-> and identity-provider identifiers. A public fork leaks your cloud estate. The
-> conformance workflow fails on a public repo for exactly this reason - see
-> [QUICKSTART.md](QUICKSTART.md).
+> **Create a PRIVATE copy of this repo** (not a GitHub fork - see QUICKSTART). Your copy
+> will hold your own org, project, billing and identity-provider identifiers. A public
+> copy leaks your cloud estate. The conformance workflow fails on a public repo for
+> exactly this reason - see [QUICKSTART.md](QUICKSTART.md).
 
 ## Status
 
@@ -48,7 +48,7 @@ service anyone runs for you.
 
 Read [QUICKSTART.md](QUICKSTART.md): prerequisites (a GCP org, an OIDC IdP, a billing
 account), then the apply order (`bootstrap` -> `gcp-org` -> `gcp` -> an app). The work is
-done in Claude Code from your fork, where the cloud CLIs and your credentials live.
+done in Claude Code from your private copy, where the cloud CLIs and your credentials live.
 
 ## License
 

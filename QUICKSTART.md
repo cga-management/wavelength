@@ -5,9 +5,10 @@ to apply the stacks. The detailed, gotcha-annotated runbook is
 [iac/bootstrap/gcp/STANDUP-template.md](iac/bootstrap/gcp/STANDUP-template.md); the trust
 model is [iac/IDENTITY.md](iac/IDENTITY.md).
 
-> **Fork into a PRIVATE repository first.** Your fork will hold your own org, project,
-> billing and identity-provider identifiers. A public fork leaks your cloud estate. CI
-> enforces this: [`.github/workflows/private-repo-guard.yml`](.github/workflows/private-repo-guard.yml)
+> **Create a PRIVATE copy of this repo first** (see *Create your private copy* below).
+> Your copy will hold your own org, project, billing and identity-provider identifiers. A
+> public copy leaks your cloud estate. CI enforces this:
+> [`.github/workflows/private-repo-guard.yml`](.github/workflows/private-repo-guard.yml)
 > fails on a public repo. To check locally: `gh repo view --json isPrivate -q .isPrivate`
 > must print `true`.
 
@@ -20,7 +21,27 @@ model is [iac/IDENTITY.md](iac/IDENTITY.md).
 - A **DNS subdomain** you can delegate to Cloud DNS (e.g. `labs.example.com`).
 - Tooling: `gcloud`, `tofu` (OpenTofu >= 1.6), `gh`, `docker`, and `az` only if you use
   the Entra worked example.
-- This repo, **forked into a private repo**.
+- This repo, copied into a **private repo** (see *Create your private copy* below).
+
+## Create your private copy
+
+Do **not** use GitHub's Fork button: a fork of a public repo stays public, cannot be made
+private, and trips the private-repo guard on every push. Instead create your own private
+repo and mirror this template into it:
+
+```bash
+gh repo create your-org/wavelength --private
+git clone --bare https://github.com/<upstream-owner>/wavelength.git
+cd wavelength.git && git push --mirror https://github.com/your-org/wavelength.git
+cd .. && rm -rf wavelength.git
+git clone https://github.com/your-org/wavelength.git && cd wavelength
+git remote add upstream https://github.com/<upstream-owner>/wavelength.git
+# later, to track template updates: git fetch upstream && git merge upstream/main
+```
+
+Verify it is private (the guard's local check): `gh repo view --json isPrivate -q .isPrivate`
+must print `true`. Leave the `WAVELENGTH_UPSTREAM_SLUG` repo variable unset - it only
+exempts the canonical public template from the guard, not your private copy.
 
 ## Identity (bring your own OIDC IdP)
 
@@ -51,7 +72,8 @@ These inputs live in a gitignored `instance.auto.tfvars` per stack; copy each
    - `./create-project.sh` creates the dedicated project (capture `PROJECT_ID`).
    - `REPO=<your-org>/wavelength PROJECT_ID=... ./bootstrap.sh` creates the state bucket
      and the WIF CI identity (capture `STATE_BUCKET`; set the printed `GCP_*` repo
-     variables). `REPO` is required and must match your private fork's slug exactly.
+     variables). `REPO` is required and must match your private copy's `owner/name` slug
+     exactly.
 2. **Org edge** ([iac/gcp-org/](iac/gcp-org/)) - run once per org by the
    workforce-pool admin (not CI). Workforce Identity Federation + IAP OAuth client +
    Cloud Armor. Two-phase for the IAP `handleRedirect` URI. Do the SPIKE in its README.
