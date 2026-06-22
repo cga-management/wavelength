@@ -27,15 +27,16 @@ model is [iac/IDENTITY.md](iac/IDENTITY.md).
 
 Do **not** use GitHub's Fork button: a fork of a public repo stays public, cannot be made
 private, and trips the private-repo guard on every push. Instead create your own private
-repo and mirror this template into it:
+repo and mirror the canonical public template (`cga-management/wavelength`) into it.
+Replace `your-org` with your own GitHub org or username:
 
 ```bash
 gh repo create your-org/wavelength --private
-git clone --bare https://github.com/<upstream-owner>/wavelength.git
+git clone --bare https://github.com/cga-management/wavelength.git
 cd wavelength.git && git push --mirror https://github.com/your-org/wavelength.git
 cd .. && rm -rf wavelength.git
 git clone https://github.com/your-org/wavelength.git && cd wavelength
-git remote add upstream https://github.com/<upstream-owner>/wavelength.git
+git remote add upstream https://github.com/cga-management/wavelength.git
 # later, to track template updates: git fetch upstream && git merge upstream/main
 ```
 
