@@ -1,0 +1,12 @@
+# Copy to instance.auto.tfvars (gitignored) and fill in. Landing zone inputs.
+project_id = "<PROJECT_ID>" # e.g. myorg-wl-<token>, created by create-project.sh
+region     = "europe-west2"
+
+# Your delegated app subdomain (one-time delegation: see QUICKSTART). No defaults, so
+# you set your OWN domain and never accidentally ship the example.
+dns_zone_name = "<DNS_ZONE_NAME>" # e.g. labs-example-com
+dns_zone_fqdn = "<DNS_ZONE_FQDN>" # e.g. labs.example.com.  (trailing dot required)
+
+# Org-policy guardrails need orgpolicy.policyAdmin and are org-level; a fresh org
+# already enforces a secure-by-default baseline. Leave off unless you hold policyAdmin.
+enable_org_policies = false

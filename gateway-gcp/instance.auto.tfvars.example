@@ -1,0 +1,14 @@
+# Copy to instance.auto.tfvars (gitignored) and fill in. Gateway (Bifrost + oauth2-proxy).
+project_id   = "<PROJECT_ID>"
+region       = "europe-west2"
+state_bucket = "<STATE_BUCKET>"
+
+entra_tenant_id = "<ENTRA_TENANT_ID>"
+
+# Two-phase: empty on the FIRST apply (Cloud Run URL unknown), then set to the deployed
+# oauth2-proxy URL on a 2nd apply so the Entra redirect URI matches.
+oauth2_proxy_url = ""
+
+# NOTE (org deployments): the oauth2-proxy + Bifrost services bind `allUsers` as the
+# Cloud Run invoker. On an org with domain-restricted sharing that is BLOCKED - see
+# iac/bootstrap/gcp/STANDUP-template.md "Gateway on an org". Decide before applying.

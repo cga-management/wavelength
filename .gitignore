@@ -1,0 +1,5 @@
+# WSL "Mark of the Web" cruft
+*:Zone.Identifier
+
+# App seed data belongs in the app's own repo, not the platform repo
+seed.sql

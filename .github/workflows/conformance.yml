@@ -1,0 +1,67 @@
+name: Wavelength conformance gate
+
+# Reusable workflow. Apps call it from their own CI:
+#   jobs:
+#     conformance:
+#       uses: <github-org>/wavelength/.github/workflows/conformance.yml@v1
+# Tag a release (v1) once this is real so callers can pin to it.
+
+on:
+  workflow_call:
+
+jobs:
+  # Gate everything else: a Wavelength app must live in a PRIVATE repo (its config
+  # holds the operator's org/tenant/billing/IdP identifiers). The canonical public
+  # template is exempt via the WAVELENGTH_UPSTREAM_SLUG repo variable.
+  private-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repo must be private
+        env:
+          IS_PRIVATE: ${{ github.event.repository.private }}
+          THIS_REPO: ${{ github.repository }}
+          UPSTREAM: ${{ vars.WAVELENGTH_UPSTREAM_SLUG }}
+        run: |
+          if [ -n "$UPSTREAM" ] && [ "$THIS_REPO" = "$UPSTREAM" ]; then
+            echo "Canonical public template ($THIS_REPO) - privacy check skipped."; exit 0
+          fi
+          if [ "$IS_PRIVATE" != "true" ]; then
+            echo "::error::Wavelength must run from a PRIVATE repo. '$THIS_REPO' is public and holds org/tenant/billing/IdP identifiers. Make it private, or set WAVELENGTH_UPSTREAM_SLUG if this is the canonical public template."
+            exit 1
+          fi
+          echo "Repository is private. OK."
+
+  baseline:
+    needs: private-repo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dockerfile present
+        run: test -f Dockerfile || (echo "::error::No Dockerfile" && exit 1)
+
+      - name: .env.example present and real .env absent
+        run: |
+          test -f .env.example || (echo "::error::No .env.example" && exit 1)
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::A real .env is committed"; exit 1
+          fi
+
+      - name: IaC present (OpenTofu)
+        run: |
+          test -d iac || (echo "::error::No iac/ directory" && exit 1)
+          ls iac/*.tf >/dev/null 2>&1 || (echo "::error::No OpenTofu (.tf) files in iac/" && exit 1)
+
+      - name: PII assessment present
+        run: |
+          test -f pii-assessment.md || test -f docs/pii-assessment.md \
+            || (echo "::error::No PII assessment found" && exit 1)
+
+      - name: Secret scan (placeholder)
+        # NB: keep this quoted - an unquoted "TODO:" inside a plain scalar is the
+        # invalid-YAML bug that made every push log a phantom failed run (#3).
+        run: 'echo "TODO: integrate gitleaks or equivalent"'
+
+  # TODO: estate-reconciliation job - diff the declared PII assessment against
+  # a scan of the hosted data estate. Runs at the Stage 1->2 boundary and on
+  # every later deploy to catch drift.

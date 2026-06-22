@@ -1,0 +1,17 @@
+# Copy to instance.auto.tfvars (gitignored) and fill in. Shared org-edge perimeter inputs.
+# Run by a HUMAN holding roles/iam.workforcePoolAdmin (NOT in Org Admin - self-grant it).
+project_id      = "<PROJECT_ID>"
+organization_id = "<ORG_ID>"          # numeric GCP org id (gcloud organizations list)
+entra_tenant_id = "<ENTRA_TENANT_ID>" # Entra/Azure AD tenant GUID = your IdP
+
+# MCP IP allowlist: Anthropic egress CIDRs. Empty => anthropic-only policy is pure
+# default-deny. Only takes effect when enable_cloud_armor = true.
+anthropic_cidrs = []
+
+# Fresh GCP projects ship SECURITY_POLICIES quota = 0. Request an increase (IAM & Admin
+# > Quotas), then flip this true and re-apply to create the Cloud Armor policies.
+enable_cloud_armor = false
+
+# Two-phase: leave unset on the FIRST apply (the GCP OAuth client_id is generated),
+# then read iap_oauth_client_id from outputs and set this on a 2nd apply.
+# iap_oauth_redirect_uri = "https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect"

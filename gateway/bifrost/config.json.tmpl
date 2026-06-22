@@ -1,0 +1,79 @@
+{
+  "client": {
+    "enforce_auth_on_inference": true
+  },
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "providers": {
+    "anthropic": {
+      "keys": [
+        {
+          "name": "platform-anthropic",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    },
+    "replicate": {
+      "keys": [
+        {
+          "name": "platform-replicate",
+          "value": "env.REPLICATE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "use_deployments_endpoint": false
+        }
+      ]
+    }
+  },
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "9f6f4cb6-1f3a-4f7e-9a5e-7b1d2a3c4d5e",
+        "name": "drum",
+        "description": "drum app virtual key (value sourced from Key Vault; stable across restarts)",
+        "value": "env.WL_DRUM_VIRTUAL_KEY",
+        "is_active": true,
+        "provider_configs": [
+          {
+            "provider": "anthropic",
+            "weight": 1.0,
+            "allowed_models": ["*"],
+            "key_ids": ["*"]
+          },
+          {
+            "provider": "replicate",
+            "weight": 1.0,
+            "allowed_models": ["*"],
+            "key_ids": ["*"]
+          }
+        ]
+      }
+    ]
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "__WL_DB_HOST__",
+      "port": "5432",
+      "user": "__WL_DB_USER__",
+      "password": "__WL_DB_PASSWORD__",
+      "db_name": "bifrost",
+      "ssl_mode": "require"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "__WL_DB_HOST__",
+      "port": "5432",
+      "user": "__WL_DB_USER__",
+      "password": "__WL_DB_PASSWORD__",
+      "db_name": "bifrost",
+      "ssl_mode": "require"
+    },
+    "retention_days": 30
+  }
+}

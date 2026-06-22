@@ -1,0 +1,16 @@
+# OpenTofu / Terraform working files - never commit these.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+
+# Variable files may hold real identifiers/secrets; commit *.tfvars.example instead.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Keep the provider dependency lock file under version control.
+!**/.terraform.lock.hcl

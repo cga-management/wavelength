@@ -1,0 +1,14 @@
+# Copy to instance.auto.tfvars (gitignored) and fill in. Outline app inputs.
+project_id   = "<PROJECT_ID>"
+region       = "europe-west2"
+state_bucket = "<STATE_BUCKET>" # from bootstrap.sh output, e.g. wl-tfstate-<token>
+
+entra_tenant_id = "<ENTRA_TENANT_ID>"
+
+outline_hostname = "outline.<DOMAIN>"     # e.g. outline.labs.example.com
+mcp_hostname     = "outline-mcp.<DOMAIN>" # Anthropic MCP host (IAP-bypassed)
+
+# Pin a version; mirror outlinewiki/outline:<ver> + redis:7-alpine into Artifact
+# Registry first (see README). Avoid floating "latest" for reproducible deploys.
+# outline_image_tag = "0.8x.x"
+# redis_image_tag   = "7-alpine"

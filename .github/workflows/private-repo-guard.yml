@@ -1,0 +1,34 @@
+name: Private repo guard
+
+# Wavelength must be run from a PRIVATE repository. A fork holds your own org,
+# project, billing and identity-provider identifiers; a public fork leaks your cloud
+# estate. This workflow fails on every push/PR if the repo is public.
+#
+# The ONE legitimate public repo is the canonical upstream template. Exempt it by
+# setting a repository variable WAVELENGTH_UPSTREAM_SLUG (Settings -> Secrets and
+# variables -> Actions -> Variables) to that repo's own "owner/name" slug. Forks leave
+# it unset (or it will not match), so they must be private.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  private-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repo must be private
+        env:
+          IS_PRIVATE: ${{ github.event.repository.private }}
+          THIS_REPO: ${{ github.repository }}
+          UPSTREAM: ${{ vars.WAVELENGTH_UPSTREAM_SLUG }}
+        run: |
+          if [ -n "$UPSTREAM" ] && [ "$THIS_REPO" = "$UPSTREAM" ]; then
+            echo "Canonical public template ($THIS_REPO) - privacy check skipped."
+            exit 0
+          fi
+          if [ "$IS_PRIVATE" != "true" ]; then
+            echo "::error::Wavelength must run from a PRIVATE repo. '$THIS_REPO' is public and your fork holds your org/tenant/billing/IdP identifiers. Make it private (Settings -> Danger Zone -> Change repository visibility). If this IS the canonical public template, set the WAVELENGTH_UPSTREAM_SLUG repo variable to '$THIS_REPO'."
+            exit 1
+          fi
+          echo "Repository is private. OK."
