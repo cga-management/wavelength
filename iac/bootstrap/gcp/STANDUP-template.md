@@ -32,7 +32,7 @@ recover). ADC refreshes automatically.
 
 ## Org prerequisites (do these upfront - each one can block a live apply mid-run)
 
-On an org-backed instance (which forks are), sort these before applying or you will hit
+On an org-backed instance (which private copies are), sort these before applying or you will hit
 them one at a time:
 
 - **`gcloud auth application-default login`** (+ `set-quota-project`), plus **`az login`**
