@@ -32,7 +32,7 @@ set -euo pipefail
 PROJECT_ID="${PROJECT_ID:?Set PROJECT_ID to the target GCP project}"
 REGION="${REGION:-europe-west2}"
 WORKLOAD="${WORKLOAD:-wl}"
-REPO="${REPO:?Set REPO=<github-org>/wavelength to your private fork's slug (the WIF subject claim must match it)}"
+REPO="${REPO:?Set REPO=<github-org>/wavelength to the slug of your private fork (the WIF subject claim must match it)}"
 
 # Instance token: a deterministic hash of project + workload (the analogue of
 # Azure's uniqueString). The landing zone derives the identical value via tofu's
@@ -55,7 +55,6 @@ GH_ISSUER="https://token.actions.githubusercontent.com"
 
 # --- Preflight ----------------------------------------------------------------
 command -v gcloud >/dev/null || { echo "ERROR: gcloud not found" >&2; exit 1; }
-command -v gsutil >/dev/null || { echo "ERROR: gsutil not found" >&2; exit 1; }
 gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q . \
   || { echo "ERROR: run 'gcloud auth login' first" >&2; exit 1; }
 
@@ -100,21 +99,28 @@ gcloud beta services identity create --service=iap.googleapis.com --project="$PR
 # 2. State backend: a versioned GCS bucket
 # =============================================================================
 echo "==> [2/4] State backend"
-if gsutil ls -b "gs://${STATE_BUCKET}" >/dev/null 2>&1; then
+# Use `gcloud storage`, not gsutil: gsutil's legacy oauth2client path cannot answer a
+# RAPT reauth challenge in a non-interactive session (org session-control policy), so it
+# breaks here and in CI; gcloud storage uses the standard gcloud auth path.
+if gcloud storage buckets describe "gs://${STATE_BUCKET}" >/dev/null 2>&1; then
   echo "    bucket gs://${STATE_BUCKET} exists"
+  # Versioning protects the state object; ensure it even on a pre-existing bucket.
+  gcloud storage buckets update "gs://${STATE_BUCKET}" --versioning >/dev/null
 else
   echo "    creating bucket gs://${STATE_BUCKET}"
-  # Uniform bucket-level access (IAM only, no ACLs) - the no-shared-key analogue.
-  gsutil mb -p "$PROJECT_ID" -l "$REGION" -b on "gs://${STATE_BUCKET}"
+  # Uniform bucket-level access (IAM only, no ACLs) - the no-shared-key analogue;
+  # public-access-prevention blocks all public access.
+  gcloud storage buckets create "gs://${STATE_BUCKET}" \
+    --project="$PROJECT_ID" --location="$REGION" \
+    --uniform-bucket-level-access --public-access-prevention
   # Versioning protects the state object against accidental overwrite/corruption.
-  gsutil versioning set on "gs://${STATE_BUCKET}"
-  # Block all public access on the bucket.
-  gsutil pap set enforced "gs://${STATE_BUCKET}"
+  gcloud storage buckets update "gs://${STATE_BUCKET}" --versioning >/dev/null
 fi
 
 # The human running tofu locally needs object access to the state bucket.
 echo "    ensuring caller has objectAdmin on the state bucket"
-gsutil iam ch "user:${CALLER}:roles/storage.objectAdmin" "gs://${STATE_BUCKET}" >/dev/null 2>&1 || true
+gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
+  --member="user:${CALLER}" --role="roles/storage.objectAdmin" >/dev/null 2>&1 || true
 
 # =============================================================================
 # 3. CI identity: Workload Identity Federation pool + provider + service account
@@ -200,7 +206,8 @@ bind_project_role "roles/logging.admin"
 bind_project_role "roles/cloudbuild.builds.editor"
 
 echo "    roles/storage.objectAdmin @ gs://${STATE_BUCKET}"
-gsutil iam ch "serviceAccount:${SA_EMAIL}:roles/storage.objectAdmin" "gs://${STATE_BUCKET}" >/dev/null
+gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
+  --member="serviceAccount:${SA_EMAIL}" --role="roles/storage.objectAdmin" >/dev/null
 
 # =============================================================================
 # Outputs
