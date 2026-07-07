@@ -1,5 +1,5 @@
 ---
-name: wavelength-pii-assessment
+name: pii-assessment
 description: Produces the PII assessment required to promote an app to the Wavelength shared stage. Use when preparing an app for Stage 2 or when its data handling changes. Inventories what data the app consumes, accesses, stores and sends onward from the code and config, then prompts for the human judgments a scan cannot supply.
 ---
 
