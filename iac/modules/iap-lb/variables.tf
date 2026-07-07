@@ -57,3 +57,15 @@ variable "routes" {
   }))
   description = "Public hostnames to serve, each with its IAP toggle and optional Cloud Armor policy."
 }
+
+variable "certificate_map" {
+  type        = string
+  description = "Certificate Manager certificate map id (projects/<p>/locations/global/certificateMaps/<name>), e.g. a landing zone's wildcard certificate map output. When set, the HTTPS proxy attaches the map (instant TLS) and NO per-host managed cert is created. When null, the module keeps its classic behavior: one Google-managed multi-domain cert covering all routes (15-60 min provisioning on first use)."
+  default     = null
+}
+
+variable "redirect_hosts" {
+  type        = map(string)
+  description = "Extra hostnames this LB answers for, each 301-redirected (same path + query, https) to its value hostname - e.g. { \"internal.example.com\" = \"admin.internal.example.com\" }. Keys are added to the managed cert; create their DNS A records (to this LB's IP) separately."
+  default     = {}
+}

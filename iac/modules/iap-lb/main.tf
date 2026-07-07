@@ -29,8 +29,19 @@ locals {
   routes_by_host = { for r in var.routes : r.hostname => r }
   iap_hosts      = { for r in var.routes : r.hostname => r if r.enable_iap }
   all_hostnames  = [for r in var.routes : r.hostname]
+  # The managed cert must also cover redirect-only hosts (they terminate TLS here too).
+  cert_domains   = concat(local.all_hostnames, sort(keys(var.redirect_hosts)))
   # Sanitise hostnames into resource-name-safe suffixes (dots -> dashes).
   suffix = { for h in local.all_hostnames : h => replace(h, ".", "-") }
+
+  # Backend service names: the prefix already identifies the app, so don't repeat the
+  # slug/FQDN. Add a per-host discriminator (the host's first label) ONLY when the LB
+  # serves more than one host; a single-host app is just "<prefix>-be". Short, <=63.
+  be_name = { for h in local.all_hostnames : h => (
+    length(local.all_hostnames) > 1
+    ? "${var.name_prefix}-${split(".", h)[0]}-be"
+    : "${var.name_prefix}-be"
+  ) }
 }
 
 # --- One serverless NEG -> the Cloud Run service -----------------------------
@@ -47,7 +58,7 @@ resource "google_compute_region_network_endpoint_group" "neg" {
 resource "google_compute_backend_service" "backend" {
   for_each = local.routes_by_host
 
-  name                  = "${var.name_prefix}-${local.suffix[each.key]}-be"
+  name                  = local.be_name[each.key]
   load_balancing_scheme = "EXTERNAL_MANAGED"
   protocol              = "HTTPS"
   security_policy       = each.value.security_policy
@@ -66,6 +77,13 @@ resource "google_compute_backend_service" "backend" {
       oauth2_client_id     = var.iap_oauth2_client_id
       oauth2_client_secret = var.iap_oauth2_client_secret
     }
+  }
+
+  # The backend name is ForceNew, so a rename must create the replacement and let the
+  # url_map repoint to it BEFORE the old backend is deleted - otherwise the delete fails
+  # with "resourceInUseByAnotherResource".
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
@@ -148,27 +166,70 @@ resource "google_compute_url_map" "this" {
       default_service = google_compute_backend_service.backend[path_matcher.key].id
     }
   }
+
+  # Redirect-only hosts: no backend, just a 301 to the target hostname (path and
+  # query preserved). Used e.g. to send the bare zone apex to a primary app host.
+  dynamic "host_rule" {
+    for_each = var.redirect_hosts
+    content {
+      hosts        = [host_rule.key]
+      path_matcher = "redir-${replace(host_rule.key, ".", "-")}"
+    }
+  }
+
+  dynamic "path_matcher" {
+    for_each = var.redirect_hosts
+    content {
+      name = "redir-${replace(path_matcher.key, ".", "-")}"
+      default_url_redirect {
+        host_redirect          = path_matcher.value
+        https_redirect         = true
+        strip_query            = false
+        redirect_response_code = "MOVED_PERMANENTLY_DEFAULT"
+      }
+    }
+  }
 }
 
-# --- Google-managed multi-domain cert + HTTPS proxy + forwarding rule ---------
+# --- TLS + HTTPS proxy + forwarding rule --------------------------------------
+# Two mutually exclusive TLS modes (the proxy accepts exactly ONE of certificate_map /
+# ssl_certificates):
+#   - var.certificate_map set  : attach the platform's Certificate Manager map (e.g. a
+#     standing wildcard cert) - TLS is valid immediately, no per-host cert at all.
+#   - var.certificate_map null : classic behavior, one Google-managed multi-domain
+#     cert for this LB's hostnames (15-60 min PROVISIONING on first use).
 resource "google_compute_managed_ssl_certificate" "this" {
+  count = var.certificate_map == null ? 1 : 0
+
   # Managed-cert domains are immutable, so a hostname change must REPLACE the cert. The
   # name carries a hash of the domains and create_before_destroy lets the new cert be
   # created + the proxy repointed before the old (proxy-bound) cert is destroyed -
   # otherwise the same-name destroy deadlocks against the proxy and aborts the apply.
-  name = "${var.name_prefix}-cert-${substr(sha1(join(",", local.all_hostnames)), 0, 6)}"
+  name = "${var.name_prefix}-cert-${substr(sha1(join(",", local.cert_domains)), 0, 6)}"
   managed {
-    domains = local.all_hostnames
+    domains = local.cert_domains
   }
   lifecycle {
     create_before_destroy = true
   }
 }
 
+# Pre-certificate_map states hold the cert unindexed; record the move so existing
+# consumers (certificate_map unset) plan a clean no-op instead of a destroy/create.
+moved {
+  from = google_compute_managed_ssl_certificate.this
+  to   = google_compute_managed_ssl_certificate.this[0]
+}
+
 resource "google_compute_target_https_proxy" "this" {
-  name             = "${var.name_prefix}-https-proxy"
-  url_map          = google_compute_url_map.this.id
-  ssl_certificates = [google_compute_managed_ssl_certificate.this.id]
+  name    = "${var.name_prefix}-https-proxy"
+  url_map = google_compute_url_map.this.id
+
+  # Exactly one of the two, keyed off var.certificate_map (null-valued attributes are
+  # treated as omitted). certificate_map needs the //certificatemanager.googleapis.com/
+  # resource-URL form, not the bare id.
+  certificate_map  = var.certificate_map != null ? "//certificatemanager.googleapis.com/${var.certificate_map}" : null
+  ssl_certificates = var.certificate_map == null ? [google_compute_managed_ssl_certificate.this[0].id] : null
 }
 
 resource "google_compute_global_address" "this" {
