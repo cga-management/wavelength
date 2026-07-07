@@ -196,8 +196,22 @@ bind_project_role "roles/iam.serviceAccountAdmin"
 bind_project_role "roles/iam.serviceAccountUser"
 bind_project_role "roles/resourcemanager.projectIamAdmin"
 bind_project_role "roles/logging.admin"
-# Cloud Build (image build) + push to Artifact Registry.
+# Cloud Build (image build) + push to Artifact Registry. Legacy: only needed if images
+# are built via `gcloud builds submit`; a pipeline that builds on the CI runner and
+# pushes straight to Artifact Registry does not use Cloud Build, so this is a candidate
+# for removal once no workflow submits builds.
 bind_project_role "roles/cloudbuild.builds.editor"
+# App-stack deploys via a CI-driven deploy workflow (iap-lb: read the DNS zone + create
+# the app's A record; create IAP settings + grant iap.httpsResourceAccessor). Without
+# these the first workflow-driven app deploy 403s on data.google_dns_managed_zone.
+bind_project_role "roles/dns.admin"
+# iap.admin manages IAP IAM policies; google_iap_settings needs the separate
+# settingsAdmin role (iap.webServices.updateSettings) - both are required.
+bind_project_role "roles/iap.admin"
+bind_project_role "roles/iap.settingsAdmin"
+# networkAdmin explicitly excludes SSL certificates, and serverless region NEGs also fall
+# outside it - loadBalancerAdmin covers both (managed cert + NEG + the LB chain).
+bind_project_role "roles/compute.loadBalancerAdmin"
 
 echo "    roles/storage.objectAdmin @ gs://${STATE_BUCKET}"
 gsutil iam ch "serviceAccount:${SA_EMAIL}:roles/storage.objectAdmin" "gs://${STATE_BUCKET}" >/dev/null
