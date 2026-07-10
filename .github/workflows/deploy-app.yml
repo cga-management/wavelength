@@ -1,0 +1,194 @@
+# Platform pull-and-deploy for an onboarded app.
+#
+# The onboarding user never touches GCP. They get their app into a PRIVATE repo in the org
+# (with a Dockerfile + an iac/ stack from the onboard-app skill, iap-lb vendored in) and
+# push. An operator then runs THIS workflow (from the Wavelength repo) to pull that repo and
+# deploy it, using the platform's federated CI identity - no human keys, no app-side gcloud.
+#
+# It authenticates as the existing bootstrap WIF identity (token = THIS repo, which the WIF
+# provider already trusts), so no WIF/security change was needed to enable app deploys.
+#
+# ---- One-time operator setup -------------------------------------------------
+#  Repo VARIABLES on this repo (bootstrap.sh printed the first four):
+#    GCP_PROJECT_ID, GCP_PROJECT_NUMBER, GCP_WIF_PROVIDER, GCP_SERVICE_ACCOUNT,
+#    GCP_STATE_BUCKET            (the tofu state bucket, e.g. wl-tfstate-<token>)
+#    GCP_REGION (default europe-west2), GCP_WORKLOAD (default wl), GCP_ENVIRONMENT (default platform)
+#  Repo SECRET:
+#    APP_REPO_TOKEN             a fine-grained PAT or GitHub App token with contents:read on
+#                              the org's app repos (the default GITHUB_TOKEN cannot read
+#                              another private repo).
+# ---- Per-app prerequisites (before first deploy of that app) ------------------
+#  - No DB carve-out: the app stack self-provisions its database, its own DB user, and
+#    the <slug>-database-url secret on the first apply (see the onboard-app skill's
+#    app-stack/database.tf; one-time hardening SQL in references/db-hardening.md).
+#  - Any API-key secrets seeded in Secret Manager (values supplied out of band).
+#  - The app repo is private in the org and contains a root Dockerfile + iac/ (iap-lb vendored).
+
+name: deploy-app
+# The run list shows which app each run deploys instead of N identical "deploy-app" rows.
+run-name: "deploy ${{ inputs.app_slug }} (${{ inputs.app_repo }}@${{ inputs.ref }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_repo:
+        description: "App repo to deploy, e.g. <your-org>/myapp"
+        required: true
+      ref:
+        description: "Git ref (branch/tag/sha) to deploy"
+        required: true
+        default: main
+      app_slug:
+        description: "App slug - the db name, image name, and state-prefix suffix (gcp-<slug>)"
+        required: true
+      app_hostname:
+        description: "Public hostname, e.g. myapp.labs.example.com"
+        required: true
+      app_owner_email:
+        description: "Deploying dev's email (the app owner / admin)"
+        required: true
+      image_tag:
+        description: "Image tag; leave blank to use the commit SHA (recommended, so redeploys roll a new revision)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write   # required for Workload Identity Federation
+
+# One deploy per app at a time: a second dispatch for the same slug would race the tofu
+# state between the two apply phases. Queued, not cancelled (a deploy must run to completion).
+concurrency:
+  group: deploy-app-${{ inputs.app_slug }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Dispatch inputs are routed through env vars rather than interpolated into run: scripts
+    # with ${{ }} so a crafted input value is data, never shell. Matters once deploys are
+    # dispatched from a portal UI whose card fields are user-typed (see docs/portal.md).
+    env:
+      REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
+      WORKLOAD: ${{ vars.GCP_WORKLOAD || 'wl' }}
+      ENVIRONMENT: ${{ vars.GCP_ENVIRONMENT || 'platform' }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      STATE_BUCKET: ${{ vars.GCP_STATE_BUCKET }}
+      APP_SLUG: ${{ inputs.app_slug }}
+      APP_HOSTNAME: ${{ inputs.app_hostname }}
+      APP_OWNER_EMAIL: ${{ inputs.app_owner_email }}
+      IMAGE_TAG_INPUT: ${{ inputs.image_tag }}
+      APP_REPO: ${{ inputs.app_repo }}
+      APP_REF: ${{ inputs.ref }}
+    steps:
+      - name: Preflight - the ref exists in the app repo
+        # Fails fast with a clear message instead of the checkout action's cryptic git
+        # retry loop. commits/<ref> resolves a branch, tag, or sha alike.
+        env:
+          GH_TOKEN: ${{ secrets.APP_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/${APP_REPO}/commits/${APP_REF}" --jq .sha >/dev/null 2>&1; then
+            DEFAULT="$(gh api "repos/${APP_REPO}" --jq .default_branch 2>/dev/null || echo unknown)"
+            echo "::error::ref '${APP_REF}' does not exist in ${APP_REPO} (default branch: '${DEFAULT}'). Fix the card's ref, or rename the app repo's branch to main (git branch -m master main; git push -u origin main; gh repo edit ${APP_REPO} --default-branch main)."
+            exit 1
+          fi
+
+      - name: Check out the app repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.app_repo }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.APP_REPO_TOKEN }}
+          path: app
+
+      - name: Preflight - the repo is onboarded
+        # A card can be registered (and a deploy pressed) before the repo has been through
+        # the onboard-app skill. Catch that here with actionable errors instead of failing
+        # later at docker build or tofu init. (Happened on the first third-party app.)
+        run: |
+          set -euo pipefail
+          fail=0
+          if [ ! -f app/Dockerfile ]; then
+            echo "::error::${APP_REPO}@${APP_REF} has no Dockerfile at the repo root - the app is not onboarded. Run the onboard-app skill (steps 1-7) and push before deploying."
+            fail=1
+          fi
+          if [ ! -f app/iac/modules/iap-lb/main.tf ]; then
+            echo "::error::${APP_REPO}@${APP_REF} is missing the iac/ stack or the vendored iap-lb module (iac/modules/iap-lb/main.tf). Complete onboard-app step 6: copy the three module files from the platform repo and COMMIT them."
+            fail=1
+          fi
+          exit "$fail"
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v1
+
+      - name: Resolve image tag
+        run: |
+          set -euo pipefail
+          # Tag by the checked-out commit SHA (unless an explicit tag was given). A changing
+          # tag is what makes tofu see a new image ref and roll a new Cloud Run revision on
+          # redeploy; a static tag would leave updated code un-deployed.
+          if [ -n "${IMAGE_TAG_INPUT}" ]; then
+            TAG="${IMAGE_TAG_INPUT}"
+          else
+            TAG="$(git -C app rev-parse --short HEAD)"
+          fi
+          echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
+
+      - name: Build and push the image (docker on the runner)
+        # Built on the runner rather than via Cloud Build: gcloud builds submit needs the
+        # compute default SA to read the build-source staging bucket, which it can't in this
+        # project, so submissions fail. A local docker build+push needs only AR write on the
+        # CI identity and drops the Cloud Build dependency entirely.
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          AR="${REGION}-docker.pkg.dev/${PROJECT_ID}/ar-${WORKLOAD}-${ENVIRONMENT}"
+          IMAGE="${AR}/${APP_SLUG}:${IMAGE_TAG}"
+          echo "Building ${IMAGE} from app/ (Dockerfile at app repo root)"
+          docker build -t "${IMAGE}" app
+          docker push "${IMAGE}"
+
+      - name: Deploy the stack (tofu, two-phase for the IAP audience)
+        working-directory: app/iac
+        run: |
+          set -euo pipefail
+          tofu init -input=false \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="prefix=gcp-${APP_SLUG}"
+
+          COMMON=(
+            -input=false -auto-approve
+            -var "project_id=${PROJECT_ID}"
+            -var "region=${REGION}"
+            -var "state_bucket=${STATE_BUCKET}"
+            -var "app_hostname=${APP_HOSTNAME}"
+            -var "app_owner_email=${APP_OWNER_EMAIL}"
+            -var "image_tag=${IMAGE_TAG}"
+          )
+
+          # Phase 1: create everything; IAP audience empty (app fails closed until phase 2).
+          tofu apply "${COMMON[@]}" -var "iap_audience="
+
+          # Phase 2: the LB backend now exists; the stack computes the correct IAP audience
+          # (from the numeric backend id). Read it and re-apply so the app verifies tokens.
+          AUD="$(tofu output -raw computed_iap_audience)"
+          tofu apply "${COMMON[@]}" -var "iap_audience=${AUD}"
+
+      - name: Summary
+        working-directory: app/iac
+        run: |
+          set -euo pipefail
+          echo "### Deployed ${APP_SLUG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- host: https://${APP_HOSTNAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- lb ip: $(tofu output -raw lb_ip_address)" >> "$GITHUB_STEP_SUMMARY"
+          echo "The managed cert provisions once DNS resolves (~15-60 min on first deploy)." >> "$GITHUB_STEP_SUMMARY"

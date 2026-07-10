@@ -265,9 +265,10 @@ this is showback, never chargeback.
 
 ## The deploy dispatch contract
 
-The Deploy button dispatches the platform deploy workflow proposed in
-[RFC #17](https://github.com/cga-management/wavelength/issues/17) (the operator-facing
-description of the same workflow is
+The Deploy button dispatches the platform deploy workflow
+[`.github/workflows/deploy-app.yml`](../.github/workflows/deploy-app.yml)
+(from [RFC #17](https://github.com/cga-management/wavelength/issues/17); its operator
+runbook is [deploy-app-workflow.md](deploy-app-workflow.md), and the app-side view is
 [deploy.md](../skills/onboard-app/references/deploy.md)) via the GitHub API:
 
 ```
