@@ -52,8 +52,9 @@ tofu apply \
   -var organization_id=<ORG_ID> \
   -var entra_tenant_id=<TENANT_ID>        # Entra example; omit for another IdP + set oidc_*
 
-# Read the client id, build the IAP handleRedirect URI, re-apply.
-CID=$(tofu output -raw oidc_app_client_id)
+# Read the GENERATED GCP client id (iap_oauth_client_id - NOT oidc_app_client_id,
+# which is the IdP app), build the IAP handleRedirect URI, re-apply.
+CID=$(tofu output -raw iap_oauth_client_id)
 tofu apply \
   -var project_id=<PROJECT_ID> \
   -var organization_id=<ORG_ID> \

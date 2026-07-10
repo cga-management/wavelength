@@ -66,6 +66,13 @@ Outline does not depend on the gateway, so this only matters if you deploy it.
 
 ## Phase 0 - platform
 
+> **Ordering note:** after step 2 (bootstrap), the landing zone (3) and the org edge
+> (5) are independent - each needs only the state bucket, and they can run in either
+> order or in parallel. Only an app (Phase 1) needs both. QUICKSTART lists the org
+> edge first because it is the once-per-org admin act; this runbook lists the landing
+> zone first because it contains the slow apply (Cloud SQL, 10-15 min) worth starting
+> early. Both orders are correct.
+
 0. **Org baseline** - [ORG-SETUP.md](ORG-SETUP.md). Confirm Cloud Identity on your org;
    verify the org node, a day-to-day admin holding `organizationAdmin` +
    `projectCreator` + **`iam.workforcePoolAdmin`** + `orgpolicy.policyAdmin`, billing,
