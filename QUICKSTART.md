@@ -104,8 +104,9 @@ These inputs live in a gitignored `instance.auto.tfvars` per stack; copy each
    `dns_zone_fqdn`, both required). Delegate the subdomain: add the `labs_dns_nameservers`
    output as NS records at your apex.
 4. **An app** - e.g. [outline-gcp/](outline-gcp/), the reference app pattern. Mirror its
-   images into Artifact Registry, apply, then create the app's DNS A records and wait for
-   the managed cert.
+   images into Artifact Registry, apply, then create the app's DNS A records. TLS is
+   served immediately by the platform wildcard cert (Certificate Manager) - no per-host
+   managed cert to provision or wait on.
 
 The model gateway ([gateway-gcp/](gateway-gcp/)) is optional and independent of Outline;
 note the org `allUsers` gotcha in STANDUP-template.md before deploying it.
