@@ -31,7 +31,8 @@ service anyone runs for you.
 | `gateway/bifrost/` | Shared Bifrost model-gateway image source (Dockerfile + config), built into your registry |
 | `gateway-gcp/` | Model gateway (Bifrost) behind an OIDC-gated proxy on Cloud Run |
 | `outline-gcp/` | Outline wiki - the first app on the shared perimeter, and the reference app pattern |
-| `skills/` | Claude Code skills (build standard, PII assessment, conformance) |
+| `skills/` | Claude Code skills: **onboard-app** (take a local app to deployed-behind-IAP, agent-driven), build standard, PII assessment, conformance |
+| `docs/` | Design docs: the admin portal control plane, per-app cost showback, per-app usage telemetry |
 | `scanner/`, `archive/` | Data-estate scanner and inactivity-archive jobs (placeholders) |
 
 ## Principles
