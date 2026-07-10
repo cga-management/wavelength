@@ -31,6 +31,13 @@ resource "random_password" "db_app_user" {
 resource "google_sql_database" "app" {
   name     = "myapp"
   instance = local.lz.db_instance_name
+  # Destroy ordering: tofu destroys in reverse dependency order, so this makes the
+  # database go BEFORE the user. After the db-hardening step myapp_app owns this
+  # database and its objects, and the shared instance survives an app teardown, so
+  # the DROP USER must actually succeed - without this ordering it fails with
+  # 'role "myapp_app" cannot be dropped because some objects depend on it'.
+  # (ABANDON is the wrong fix here: it would orphan the user on the shared instance.)
+  depends_on = [google_sql_user.app]
 }
 
 resource "google_sql_user" "app" {
