@@ -1,5 +1,5 @@
 ---
-name: wavelength-build-standard
+name: build-standard
 description: The "how we do it" standard for building apps under the Wavelength pipeline. Use whenever building or modifying an app intended to be shared or productionised. Defines repo structure, config and secret handling, model access via the gateway, IaC expectations, and what the Stage 2 promotion gate requires.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: wavelength-conformance
+name: conformance
 description: Conformance checks a Wavelength instance must pass before and during operation. Use when standing up a private copy, before the first push, or when diagnosing a failing conformance gate. Covers the must-be-private-repo guardrail and the baseline repo checks.
 ---
 
