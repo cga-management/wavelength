@@ -34,13 +34,13 @@ someone else has to do it.
 
 ```
 bootstrap/
-  azure/  create-subscription.sh  (step -1)   bootstrap.sh (step 0)   <- built & proven
-  gcp/    create-project.sh       (step -1)   [bootstrap.sh later]    <- spec stub
-  aws/    create-account.sh       (step -1)   [bootstrap.sh later]    <- spec stub
+  gcp/    create-project.sh  (step -1)   bootstrap.sh (step 0)   <- built & proven
+  aws/    create-account.sh  (step -1)   [bootstrap.sh later]    <- spec stub
 ```
 
-Azure is implemented and validated first; GCP and AWS carry the same-shaped step -1
-spec stub and gain their step-0 bootstrap when `iac/gcp/` and `iac/aws/` are built.
+GCP is implemented and validated first (the v1 target); AWS carries the same-shaped
+step -1 spec stub and gains its step-0 bootstrap when `iac/aws/` is built. Azure is
+not part of v1 (see the top-level ROADMAP).
 
 ## Cross-cloud equivalents
 

@@ -3,7 +3,7 @@
 #
 # AWS's equivalent of an Azure subscription is an ACCOUNT - the billing, IAM and
 # service boundary. It is created under AWS Organizations, ideally in a dedicated
-# OU. Same intent as ../azure/create-subscription.sh; see ../README.md.
+# OU. Same intent as ../gcp/create-project.sh; see ../README.md.
 #
 # Privileges (a billing/org-admin act - may be handed off; use --spec):
 #   - run from the Organizations MANAGEMENT account
