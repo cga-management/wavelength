@@ -33,6 +33,7 @@ service anyone runs for you.
 | `outline-gcp/` | Outline wiki - the first app on the shared perimeter, and the reference app pattern |
 | `skills/` | Claude Code skills: **onboard-app** (take a local app to deployed-behind-IAP, agent-driven), build standard, PII assessment, conformance |
 | `docs/` | Design docs: the admin portal control plane, per-app cost showback, per-app usage telemetry |
+| `TEARDOWN.md` | Destroy runbook: order, the async producer-release gotchas, bootstrap cleanup |
 | `scanner/`, `archive/` | Data-estate scanner and inactivity-archive jobs (placeholders) |
 
 ## Principles

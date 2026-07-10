@@ -117,3 +117,6 @@ Use the acceptance checklist at the end of
 [STANDUP-template.md](iac/bootstrap/gcp/STANDUP-template.md): org visible, applies clean,
 one-login human path (IAP -> app OIDC), perimeter blocks unauthenticated traffic, MCP path
 reachable only from allowed IPs, uploads persist.
+
+To take an instance down again, follow [TEARDOWN.md](TEARDOWN.md) - destroy is not a
+clean reverse of apply on GCP.
