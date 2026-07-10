@@ -237,6 +237,7 @@ GitHub Actions OIDC login (set as repo variables on ${REPO}):
   GCP_PROJECT_NUMBER        = ${PROJECT_NUMBER}
   GCP_WIF_PROVIDER          = ${PROVIDER_NAME}
   GCP_SERVICE_ACCOUNT       = ${SA_EMAIL}
+  GCP_STATE_BUCKET          = ${STATE_BUCKET}   (deploy-app workflow: tofu backend for app stacks)
 
   # google-github-actions/auth@v2 step:
   #   workload_identity_provider: \${{ vars.GCP_WIF_PROVIDER }}
