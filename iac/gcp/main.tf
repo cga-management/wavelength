@@ -49,6 +49,7 @@ resource "google_project_service" "apis" {
     "servicenetworking.googleapis.com",
     "compute.googleapis.com",
     "logging.googleapis.com",
+    "bigquery.googleapis.com",
     "orgpolicy.googleapis.com",
     "iap.googleapis.com",
     "dns.googleapis.com",
