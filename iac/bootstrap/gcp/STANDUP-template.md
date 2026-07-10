@@ -42,8 +42,10 @@ them one at a time:
 - **Billing: grant the day admin `roles/billing.user`** on the billing account (a
   super-admin who created the account has it; Org Admin alone does not), so you can link
   the new project.
-- **Request a `SECURITY_POLICIES` quota increase** (IAM & Admin > Quotas) if you want
-  Cloud Armor / the MCP IP-allowlist - fresh projects start at 0. Until then keep
+- **Check the `SECURITY_POLICIES` quota** (IAM & Admin > Quotas) if you want Cloud
+  Armor / the MCP IP-allowlist. Fresh projects have shipped with 0 (request an
+  increase) but have also been observed defaulting to 10 (nothing to do - just flip
+  `enable_cloud_armor = true`). Until the quota is nonzero keep
   `enable_cloud_armor = false`.
 - **Secure-by-default org policies bite:** `iam.disableServiceAccountKeyCreation` blocks
   GCS HMAC keys (Outline uses gcsfuse instead - already handled), and domain-restricted
