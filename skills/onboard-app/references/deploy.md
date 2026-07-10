@@ -27,7 +27,8 @@ for someone else to run.
 ## Platform-side: what the operator/workflow does (for reference)
 
 The operator runs the `deploy-app` workflow in the Wavelength repo
-(`.github/workflows/deploy-app.yml`) with those inputs. Using the platform's federated CI
+(`.github/workflows/deploy-app.yml`; operator runbook:
+[docs/deploy-app-workflow.md](../../../docs/deploy-app-workflow.md)) with those inputs. Using the platform's federated CI
 identity (no human keys), it:
 1. Checks out your app repo at the given ref.
 2. Builds the image with docker on the runner and pushes it to the shared Artifact
