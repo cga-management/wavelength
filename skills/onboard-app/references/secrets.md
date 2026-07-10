@@ -55,6 +55,15 @@ the app's base URL at it and use a gateway virtual key (still stored in Secret M
 not, a direct provider key in Secret Manager (with a deployed-only key per rule 2) is the
 interim.
 
+## Per-app gateway key (LLM apps)
+
+If the app calls LLMs via the gateway, it must use a **per-app gateway key minted for the
+app's slug** - never a shared or borrowed key. The operator mints the key in the gateway
+for `<app>` and stores it as a Secret Manager secret exactly like any other API key (e.g.
+`<app>-gateway-key`, referenced from `run.tf` as above). The per-app key is what makes the
+app's AI spend attributable in the gateway's usage log - a shared key collapses every
+app's model usage into one line and breaks per-app cost showback.
+
 ## What is already handled for you
 
 - `DATABASE_URL` is provided as a secret env by your own stack's `database.tf`, created

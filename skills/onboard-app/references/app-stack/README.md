@@ -9,6 +9,8 @@ service behind one IAP-gated LB route, reading the shared DB secret and its API-
 
 Everything uses the placeholder slug **`myapp`**. Replace `myapp` with your app's slug
 throughout (filenames stay; edit contents). Keep it short, lowercase, `[a-z0-9-]`.
+This includes the `app = "myapp"` label in `run.tf` (service AND template) - the billing
+export attributes per-app cost by that label, so a wrong slug means misattributed spend.
 
 ## Files
 

@@ -90,6 +90,11 @@ output "labs_dns_nameservers" {
   value       = google_dns_managed_zone.labs.name_servers
 }
 
+output "telemetry_dataset_id" {
+  description = "BigQuery dataset id for platform usage telemetry (LB + IAP audit log sink). The future admin-portal usage collector reads its aggregates from here."
+  value       = google_bigquery_dataset.telemetry.dataset_id
+}
+
 output "certificate_map_id" {
   description = "Certificate Manager certificate map id (projects/<p>/locations/global/certificateMaps/<name>). App LBs pass this to the iap-lb module's certificate_map input for instant wildcard TLS."
   value       = google_certificate_manager_certificate_map.wildcard.id
