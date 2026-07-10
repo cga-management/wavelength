@@ -63,3 +63,25 @@ depend on it.
 
 Public access, custom auth for archetype A, MCP/machine endpoints, or a real PII assessment /
 Stage-2 conformance promotion. Those are separate, deliberate follow-ups.
+
+## Troubleshooting: a redeploy keeps failing with the SAME revision name
+
+Symptom: the first revision failed to become ready (often an environmental cause - a DB
+grant, a missing secret, an external dependency - not the image). You fix the environment
+out of band, re-run the deploy with the same image tag and template, and it fails again,
+citing the same revision.
+
+Cause: Cloud Run only starts instances for a NEW revision; a failed revision is terminal
+and never retried. A redeploy whose service template is byte-identical creates no new
+revision, so the apply just converges on the existing (failed) revision and waits.
+
+Unblock: force a new revision by perturbing the template harmlessly, e.g.
+
+```bash
+gcloud run services update <service> --region <region> --update-env-vars NUDGE=1
+```
+
+The new revision starts against the now-fixed environment. The next IaC apply strips the
+`NUDGE` var as drift (one more healthy revision) and state is clean again. Pipelines that
+tag images by commit SHA avoid this for code fixes - a new commit is a new image ref, hence
+a new revision; the trap is specific to out-of-band environmental fixes with no new commit.
