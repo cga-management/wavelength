@@ -59,7 +59,13 @@ resource "google_cloud_run_v2_service" "bifrost" {
   # oauth2-proxy reaches it by routing through the VPC; see oauth2proxy.tf).
   ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
 
+  # Cost attribution: the billing export keys Cloud Run cost on the RUNNING REVISION's
+  # labels, so `app` must be on the template (revision) as well as the service. Labels
+  # are not retroactive - a redeploy is needed before cost rows carry the label.
+  labels = merge(local.lz.labels, { app = "bifrost" })
+
   template {
+    labels          = merge(local.lz.labels, { app = "bifrost" })
     service_account = local.lz.app_service_account_email
 
     scaling {

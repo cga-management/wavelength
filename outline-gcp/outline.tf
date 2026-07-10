@@ -22,7 +22,13 @@ resource "google_cloud_run_v2_service" "outline" {
     ignore_changes = [scaling]
   }
 
+  # Cost attribution: the billing export keys Cloud Run cost on the RUNNING REVISION's
+  # labels, so `app` must be on the template (revision) as well as the service. Labels
+  # are not retroactive - a redeploy is needed before cost rows carry the label.
+  labels = merge(local.lz.labels, { app = "outline" })
+
   template {
+    labels          = merge(local.lz.labels, { app = "outline" })
     service_account = local.lz.app_service_account_email
 
     scaling {
