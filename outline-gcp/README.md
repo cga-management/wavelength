@@ -41,7 +41,9 @@ Outline's own OIDC rides the same IdP SSO session silently.
    docker tag  redis:7-alpine ${AR}/redis:7-alpine
    docker push ${AR}/redis:7-alpine
    ```
-   Set `outline_image_tag` / `redis_image_tag` accordingly.
+   Set `outline_image_tag` / `redis_image_tag` accordingly. `docker push` may warn
+   "Not all multiplatform-content is present" - benign; the single-platform image
+   Cloud Run needs is pushed.
 
 ## Deploy
 
@@ -61,16 +63,16 @@ id, hostnames, image tags); copy `instance.auto.tfvars.example` to start.
 
 ### DNS + cert
 
-After the first apply, read `lb_ip_address` and create A records (under your delegated
-app subdomain):
+Nothing manual: the stack creates both A records in the delegated Cloud DNS zone
+itself ([dns.tf](dns.tf)), and TLS is served immediately by the platform wildcard
+cert - the LB attaches the landing zone's Certificate Manager map, so there is no
+per-host managed-cert wait. Allow a few minutes after the first apply for the global
+LB to program at the edge (TLS handshakes can fail with connection resets until
+then; that is propagation, not a cert problem).
 
-```
-<outline_hostname>      A   <lb_ip_address>
-<mcp_hostname>          A   <lb_ip_address>
-```
-
-The Google-managed cert provisions automatically once both names resolve to the IP
-(can take 15-60 min). Until then HTTPS will fail - this is expected.
+The only DNS prerequisite is the one-time zone delegation from the landing zone
+(QUICKSTART): the wildcard cert cannot validate, and these A records do not resolve,
+until the NS records at your apex point at the delegated zone.
 
 ## Notes / gotchas
 
