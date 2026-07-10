@@ -46,6 +46,10 @@ resource "google_sql_user" "admin" {
   name     = var.db_admin_login
   instance = google_sql_database_instance.shared.name
   password = random_password.db_admin.result
+  # ABANDON: the admin owns objects across the per-app databases, so DROP USER fails
+  # ("cannot be dropped because some objects depend on it") and blocks tofu destroy.
+  # Skipping the DROP is safe here - deleting the instance cascades everything anyway.
+  deletion_policy = "ABANDON"
 }
 
 # Per-app database (drum). Role-per-app (least privilege) is a follow-up; for now the
