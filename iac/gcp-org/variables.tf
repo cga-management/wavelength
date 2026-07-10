@@ -42,6 +42,12 @@ variable "entra_tenant_id" {
   default     = ""
 }
 
+variable "workforce_session_duration" {
+  type        = string
+  description = "Workforce-pool session lifetime before re-authentication, applied to all IAP-gated apps (they share the pool). GCP's default is 3600s (1h), which users feel as constant re-login; 28800s (8h) is a saner default. Effective session is min(this, the IdP's sign-in-frequency/token lifetime). Range 900s-43200s."
+  default     = "28800s"
+}
+
 variable "oidc_issuer_uri" {
   type        = string
   description = "OIDC issuer URI for the workforce provider. Empty derives the Entra issuer from entra_tenant_id; set explicitly for another IdP, e.g. https://YOUR_TENANT.eu.auth0.com/."

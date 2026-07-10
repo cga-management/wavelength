@@ -1,3 +1,7 @@
+# Vendored copy of the platform iap-lb module (<your-platform-repo>
+# iac/modules/iap-lb @ <commit>). Do NOT edit - re-sync from the platform repo
+# when the module changes (see ../../README.md).
+
 # Reusable external HTTPS load balancer for a Cloud Run app behind the shared IAP
 # perimeter. One global IP + one managed cert (multi-domain) + one URL map serve N
 # hostnames; each hostname gets its own backend service so IAP and Cloud Armor can
@@ -30,7 +34,7 @@ locals {
   iap_hosts      = { for r in var.routes : r.hostname => r if r.enable_iap }
   all_hostnames  = [for r in var.routes : r.hostname]
   # The managed cert must also cover redirect-only hosts (they terminate TLS here too).
-  cert_domains = concat(local.all_hostnames, sort(keys(var.redirect_hosts)))
+  cert_domains   = concat(local.all_hostnames, sort(keys(var.redirect_hosts)))
   # Sanitise hostnames into resource-name-safe suffixes (dots -> dashes).
   suffix = { for h in local.all_hostnames : h => replace(h, ".", "-") }
 

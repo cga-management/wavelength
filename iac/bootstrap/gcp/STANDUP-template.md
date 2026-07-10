@@ -13,7 +13,7 @@ read [QUICKSTART.md](../../../QUICKSTART.md) first.
 | `ORG_ID` (numeric, your org) | org-edge workforce pool |
 | `TENANT_ID` (Entra example) or your `oidc_*` IdP inputs | gateway, org-edge, outline OIDC |
 | Anthropic egress CIDRs | org-edge `anthropic_cidrs` (MCP allowlist) |
-| DNS control for your app subdomain | A records for `outline` + `outline-mcp`, managed-cert validation |
+| DNS control for your app subdomain | A records for `outline` + `outline-mcp` (platform wildcard cert already covers TLS; only the one-time zone delegation validates it) |
 | `STATE_BUCKET` (from bootstrap output) | every `tofu init` |
 
 ## Local auth for `tofu` (do this once)
@@ -96,8 +96,8 @@ Outline does not depend on the gateway, so this only matters if you deploy it.
 
 6. **Mirror images + deploy** - [../../../outline-gcp/](../../../outline-gcp/)
    (`prefix=gcp-outline`). Mirror `outlinewiki/outline` + `redis:7-alpine` into AR,
-   `tofu apply`, then create the two DNS A records to `lb_ip_address` and wait for the
-   managed cert.
+   `tofu apply`, then create the two DNS A records to `lb_ip_address`. TLS is served
+   immediately by the platform wildcard cert - no per-host managed cert wait.
 
 ## Phase 2 - MCP + guide
 

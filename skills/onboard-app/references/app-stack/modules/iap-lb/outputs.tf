@@ -1,3 +1,7 @@
+# Vendored copy of the platform iap-lb module (<your-platform-repo>
+# iac/modules/iap-lb @ <commit>). Do NOT edit - re-sync from the platform repo
+# when the module changes (see ../../README.md).
+
 output "ip_address" {
   description = "The LB's global static IP. Point each hostname's DNS A record here."
   value       = google_compute_global_address.this.address

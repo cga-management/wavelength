@@ -19,6 +19,11 @@ module "lb" {
   region            = var.region
   cloud_run_service = google_cloud_run_v2_service.outline.name
 
+  # Instant wildcard TLS from the platform certificate map (no per-host managed cert, no
+  # 15-60 min provisioning wait). Null on a landing zone that predates the map, in which
+  # case the module falls back to a classic per-host managed cert.
+  certificate_map = try(local.lz.certificate_map_id, null)
+
   # Shared workforce identity + the GCP IAP OAuth client from the org-edge stack.
   # (IAP uses the GCP oauth client, NOT the Entra app - auth.cloud.google validates it.)
   workforce_pool           = local.edge.workforce_pool_name

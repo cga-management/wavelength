@@ -1,3 +1,7 @@
+# Vendored copy of the platform iap-lb module (<your-platform-repo>
+# iac/modules/iap-lb @ <commit>). Do NOT edit - re-sync from the platform repo
+# when the module changes (see ../../README.md).
+
 variable "name_prefix" {
   type        = string
   description = "Prefix for the LB resource names, e.g. 'wl-outline-platform'."

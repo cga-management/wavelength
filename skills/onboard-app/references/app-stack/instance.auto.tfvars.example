@@ -1,0 +1,14 @@
+# Copy to instance.auto.tfvars (gitignored) and fill in. Never commit real values.
+project_id   = "<PROJECT_ID>"
+region       = "europe-west2"
+state_bucket = "<STATE_BUCKET>"        # e.g. wl-tfstate-<token>, from the operator
+
+app_hostname    = "myapp.<subdomain>"  # under the delegated app subdomain
+app_owner_email = "<you@example.com>"  # deploying dev = owner/admin
+image_tag       = "v1"                 # the tag you mirrored into Artifact Registry
+
+# Two-phase: leave empty on the FIRST apply. After it, run:
+#   tofu output -raw computed_iap_audience
+# paste the value here, and re-apply. (The deploy-app workflow does this automatically;
+# this manual path exists for operator-driven applies.)
+iap_audience = ""

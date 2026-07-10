@@ -88,6 +88,7 @@ a group) the companion roles it actually needs:
 | Manage org IAM/policy bindings | `roles/resourcemanager.organizationAdmin` (the base) |
 | Create projects | `roles/resourcemanager.projectCreator` (auto-granted to the domain at org creation) |
 | Delete projects | `roles/resourcemanager.projectDeleter` |
+| Create the baseline folder | `roles/resourcemanager.folderCreator` (Org Admin can set folder IAM but NOT create folders; `folderAdmin` if you also need delete/move) |
 | Create workforce pools (WIF) | `roles/iam.workforcePoolAdmin` |
 | Set / override org policies | `roles/orgpolicy.policyAdmin` |
 | Link billing | `roles/billing.user` on the billing account |
@@ -179,6 +180,7 @@ gcloud organizations describe organizations/<ORG_ID> --account=<SUPER_ADMIN>
    self-grant these via org IAM):
    ```bash
    for R in resourcemanager.projectCreator resourcemanager.projectDeleter \
+            resourcemanager.folderCreator \
             iam.workforcePoolAdmin orgpolicy.policyAdmin; do
      gcloud organizations add-iam-policy-binding <ORG_ID> \
        --member="user:<DAY_ADMIN>" --role="roles/$R" --condition=None --account=<DAY_ADMIN>

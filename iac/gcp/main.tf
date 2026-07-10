@@ -52,6 +52,7 @@ resource "google_project_service" "apis" {
     "orgpolicy.googleapis.com",
     "iap.googleapis.com",
     "dns.googleapis.com",
+    "certificatemanager.googleapis.com",
   ])
   project            = var.project_id
   service            = each.key

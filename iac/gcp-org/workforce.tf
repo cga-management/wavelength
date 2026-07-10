@@ -93,6 +93,13 @@ resource "google_iam_workforce_pool" "this" {
   location          = "global"
   display_name      = "Wavelength workforce"
   description       = "Workforce users federated into GCP for IAP-gated access to wavelength apps."
+
+  # Session lifetime before re-authentication. This applies to EVERY app behind the shared
+  # IAP LB, since they all use this pool. GCP defaults to 3600s (1h), which users experience
+  # as "logins time out constantly". The effective session is min(this, the IdP's
+  # sign-in-frequency / token lifetime), so if your IdP enforces a shorter reauth interval
+  # that wins. Range 900s (15m) - 43200s (12h).
+  session_duration = var.workforce_session_duration
 }
 
 resource "google_iam_workforce_pool_provider" "entra" {

@@ -89,3 +89,8 @@ output "labs_dns_nameservers" {
   description = "Nameservers for the app subdomain. Add these as NS records for the subdomain at your apex (wherever the apex is managed) to delegate it to Cloud DNS."
   value       = google_dns_managed_zone.labs.name_servers
 }
+
+output "certificate_map_id" {
+  description = "Certificate Manager certificate map id (projects/<p>/locations/global/certificateMaps/<name>). App LBs pass this to the iap-lb module's certificate_map input for instant wildcard TLS."
+  value       = google_certificate_manager_certificate_map.wildcard.id
+}
