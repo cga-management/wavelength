@@ -43,6 +43,20 @@ echo -n "<ANTHROPIC_API_KEY>" | gcloud secrets versions add anthropic-api-key \
 Then build the Bifrost image into Artifact Registry and apply
 [`../../gateway-gcp/`](../../gateway-gcp/).
 
+## Billing export (one-time, manual)
+
+GCP's BigQuery billing export is a Billing-account setting that Terraform cannot
+create - enable it by hand, once, at platform standup:
+
+1. Create or choose a BigQuery dataset in the platform project (the landing zone's
+   telemetry dataset from `telemetry.tf` works, or make a dedicated one).
+2. In the console: **Billing -> Billing export -> BigQuery export**, enable
+   **Detailed usage cost** to that dataset.
+
+Do this NOW, not when cost reporting is first wanted: the export accumulates only
+from the day it is enabled, and Cloud Run cost rows carry the per-app `app` label
+only after a labelled revision is live. Data not captured is lost forever.
+
 ## Notes
 
 - **pgvector** is not an instance flag on Cloud SQL; enable it per app database with

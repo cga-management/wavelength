@@ -75,7 +75,10 @@ Outline does not depend on the gateway, so this only matters if you deploy it.
    `GCP_*` GitHub repo variables. Capture `STATE_BUCKET`.
 3. **Landing zone** - `../../gcp/` (`prefix=gcp-landing-zone`). VPC, Cloud SQL (now incl.
    the `outline` DB + `outline-database-url` secret), Artifact Registry, Secret Manager,
-   app SA. Seed the operator Anthropic/Replicate key secrets.
+   app SA. Seed the operator Anthropic/Replicate key secrets. **Also now:** enable the
+   BigQuery billing export (manual, Billing console) - see "Billing export (one-time,
+   manual)" in [../../gcp/README.md](../../gcp/README.md); it accumulates only from the
+   day it is enabled.
 4. **Gateway** - `../../../gateway-gcp/` (`prefix=gcp-gateway`). Two-phase
    (`oauth2_proxy_url`), then seed Bifrost providers/virtual keys.
    - **ORG GOTCHA:** domain-restricted sharing **blocks the `allUsers` invoker** the
