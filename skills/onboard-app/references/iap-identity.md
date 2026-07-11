@@ -101,10 +101,19 @@ def normalize_owner_email(raw: str) -> str:
 
 ## FastAPI snippet (archetype A)
 
-Dependencies: `google-auth` (verifies IAP JWTs) - add to your requirements.
+Dependencies - add ALL THREE to your requirements; each missing one fails differently
+and none of the failures name the missing package at request time:
+
+- `google-auth` - the verifier (`id_token.verify_token`).
+- `pyjwt` - google-auth needs it to parse the IAP certs endpoint's **JWK** key format;
+  without it every verify raises `ImportError: The pyjwt library is not installed ...`,
+  which the except-branch turns into a blanket 403 for every signed-in user (the app
+  builds, boots and probes green - it fails only when a real user arrives).
+- `cryptography` - ES256 signature support.
 
 ```python
 # app/iap.py
+import json
 import os
 from urllib.parse import unquote
 from fastapi import Request, HTTPException, Depends
@@ -129,7 +138,12 @@ def current_user(request: Request) -> CurrentUser:
             assertion, _request, audience=_IAP_AUDIENCE,
             certs_url="https://www.gstatic.com/iap/verify/public_key-jwk",
         )
-    except Exception:
+    except Exception as exc:
+        # Log the error class + message ONLY - never the assertion (logging.md). The
+        # message names the failing check (wrong audience, expired, certs fetch,
+        # missing pyjwt) and distinguishes "bad token" from "we can never verify".
+        print(json.dumps({"severity": "WARNING", "message": "IAP assertion verification failed",
+                          "error": type(exc).__name__, "errorDetail": str(exc)[:200]}))
         raise HTTPException(status_code=403, detail="invalid IAP assertion")
     if claims.get("iss") != "https://cloud.google.com/iap":
         raise HTTPException(status_code=403, detail="bad issuer")
@@ -163,7 +177,9 @@ def _resolve_email(claims) -> str | None:
 
 1. Read `X-Goog-IAP-JWT-Assertion`; 401 if absent.
 2. Verify ES256 signature against the IAP JWKS; check `iss`, `aud` (= `IAP_AUDIENCE` env),
-   `exp`.
+   `exp`. On verification failure, log the error CLASS and message (never the token),
+   then reject 403 - the message names the failing check, which is the difference
+   between "attacker sent garbage" and "this app can never verify anything".
 3. Resolve the email per the scan above; **normalize it** with `normalize_owner_email`
    (see "Normalize the owner email"). That normalized email is the owner id. No
    email-shaped value: 403, log claim key names only.
