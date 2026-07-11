@@ -151,7 +151,22 @@ email (the deploying dev). They own `project_id`, `region`, `state_bucket`, and 
    ```
    Every line must print OK (the identity line applies to archetype A only - skip it for
    archetype B, which keeps its own auth). Then give the operator the deployed-copy
-   API key value(s) and the deploy inputs (slug, hostname, owner email); they run the
+   API key value(s), and print the CARD JSON so the user can paste it straight into the
+   platform portal's register form (the keys match the form fields exactly - fill in the
+   real values):
+   ```json
+   {
+     "name": "My App",
+     "slug": "myapp",
+     "hostname": "myapp.<your-app-domain>",
+     "repo": "<your-org>/myapp",
+     "ref": "main",
+     "description": "One sentence on what the app does.",
+     "icon": "emoji or image URL",
+     "docs_url": ""
+   }
+   ```
+   Registering the card (or handing the same values to the operator) triggers the
    `deploy-app` workflow, which pulls the repo, builds the image, applies the stack (the
    first apply also creates the app's database, DB user, and DATABASE_URL secret), and
    wires the IAP audience. `references/deploy.md`.

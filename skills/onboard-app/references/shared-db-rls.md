@@ -42,6 +42,16 @@ no operator action, and a redeploy onto a fresh slice must self-heal.
 - Retry with backoff (e.g. 5 attempts, a few seconds apart) - on the very first boot the
   freshly created database can lag the service by a few seconds.
 - It must be a no-op on an already-migrated database - it runs on EVERY cold start.
+- **Expand-only, always.** Deploys are zero-downtime: Cloud Run boots the NEW revision
+  (which runs these migrations against the live shared database) while the OLD revision
+  is still serving traffic, and cuts over only when the new one is Ready. So for a
+  window of seconds to minutes - or indefinitely, if the new revision fails after the
+  migration ran - the previous code runs against the migrated schema. Migrations must
+  therefore only ADD (nullable columns, new tables, new indexes); never DROP, RENAME,
+  or change the meaning of anything the currently-serving code still reads. Remove old
+  columns in a LATER release, after no serving revision references them
+  (expand/contract). A `DROP COLUMN` shipped in the same release as the code that stops
+  using it gives every in-flight request on the old revision a live schema error.
 
 ## The two shared/lookup databases you can read
 
