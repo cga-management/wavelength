@@ -67,6 +67,16 @@ resource "google_compute_backend_service" "backend" {
   protocol              = "HTTPS"
   security_policy       = each.value.security_policy
 
+  # Request logging is OFF by default on backend services. The platform's usage
+  # telemetry (docs/usage-telemetry.md) aggregates LB request logs routed by the
+  # landing-zone sink; without this block no http_load_balancer entries exist and
+  # usage data is permanently empty. Full sample rate: unique-user counts need
+  # every request.
+  log_config {
+    enable      = true
+    sample_rate = 1.0
+  }
+
   backend {
     group = google_compute_region_network_endpoint_group.neg.id
   }
