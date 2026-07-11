@@ -81,6 +81,30 @@ jobs:
       APP_REPO: ${{ inputs.app_repo }}
       APP_REF: ${{ inputs.ref }}
     steps:
+      - name: Preflight - platform repo configuration
+        # Repo variables live outside git and CAN go missing (recreated repo, org
+        # migration, accidental deletion). Without this check the run dies inside the
+        # auth action with a generic credentials error; fail first and name the fix.
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          APP_REPO_TOKEN_SET: ${{ secrets.APP_REPO_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${PROJECT_ID}" ]      || missing="${missing} GCP_PROJECT_ID"
+          [ -n "${STATE_BUCKET}" ]    || missing="${missing} GCP_STATE_BUCKET"
+          [ -n "${WIF_PROVIDER}" ]    || missing="${missing} GCP_WIF_PROVIDER"
+          [ -n "${SERVICE_ACCOUNT}" ] || missing="${missing} GCP_SERVICE_ACCOUNT"
+          if [ -n "${missing}" ]; then
+            echo "::error::missing repo variable(s):${missing}. bootstrap.sh prints all of them at the end of its run - re-set them on this repo (Settings > Secrets and variables > Actions > Variables, or gh variable set)."
+            exit 1
+          fi
+          if [ "${APP_REPO_TOKEN_SET}" != "true" ]; then
+            echo "::error::the APP_REPO_TOKEN repo secret is not set - the workflow cannot check out app repos without it (fine-grained token, contents:read on the org's app repos; see docs/deploy-app-workflow.md)."
+            exit 1
+          fi
+
       - name: Preflight - the ref exists in the app repo
         # Fails fast with a clear message instead of the checkout action's cryptic git
         # retry loop. commits/<ref> resolves a branch, tag, or sha alike.
