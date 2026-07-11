@@ -3,8 +3,8 @@
 # adds the version after apply (see iac/gcp/README.md). This mirrors the Azure
 # posture where anthropic-api-key is placed into Key Vault by hand.
 #
-# Secrets whose values tofu DOES own (db password, drum URL) live in database.tf;
-# the gateway-owned ones (drum virtual key, Bifrost encryption key) live in
+# Secrets whose values tofu DOES own (the db admin password) live in database.tf;
+# the gateway-owned ones (per-app virtual keys, Bifrost encryption key) live in
 # gateway-gcp/.
 
 resource "google_secret_manager_secret" "anthropic_api_key" {

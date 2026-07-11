@@ -59,8 +59,8 @@ only after a labelled revision is live. Data not captured is lost forever.
 
 ## Notes
 
-- **pgvector** is not an instance flag on Cloud SQL; enable it per app database with
-  `CREATE EXTENSION vector` (drum needs it; Bifrost does not).
+- **pgvector** is not an instance flag on Cloud SQL; if an app needs it, enable it per
+  app database with `CREATE EXTENSION vector` (Bifrost does not need it).
 - **Org policies** need `roles/orgpolicy.policyAdmin` and are partly org-scope only;
   left off for this standalone project. Private-IP-only Cloud SQL gives the
   deny-public-DB posture regardless.
