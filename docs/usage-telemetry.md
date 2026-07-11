@@ -40,8 +40,11 @@ Per app (joined by hostname, below):
 
 ## Data path on GCP
 
-1. **Landing-zone log sink** routes the LB request logs and the IAP data-access audit
-   logs to a BigQuery dataset. This is a platform-IaC prerequisite (a sink alongside the
+1. **LB request logging + the landing-zone log sink.** Backend-service request logging
+   is OFF by default on GCP; the `iap-lb` module enables it (`log_config`, full sample
+   rate) on every backend it creates - without that there are no `http_load_balancer`
+   entries to route and usage stays empty. The landing-zone sink then routes the LB
+   request logs and the IAP data-access audit logs to a BigQuery dataset. This is a platform-IaC prerequisite (a sink alongside the
    retention config in [`iac/gcp/monitoring.tf`](../iac/gcp/monitoring.tf)), delivered as
    a companion prerequisites change; like the billing export in
    [cost-showback.md](cost-showback.md), it accumulates only from enablement.
