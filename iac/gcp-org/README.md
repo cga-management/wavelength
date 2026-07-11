@@ -38,6 +38,27 @@ against your live IdP:
 3. Confirm IAP gating with a **workforce** identity end-to-end (sign in, reach the app).
    If unviable, fall back to the repo's `oauth2-proxy` pattern with
    `OAUTH2_PROXY_TRUSTED_IPS` for the Anthropic bypass.
+4. **Confirm the resolved subject is the user's email**, not an opaque id (see "The
+   subject must be an email" below): sign in to any app and check that the workforce
+   principal in its logs/IAP JWT ends in `/subject/<email>`.
+
+## The subject must be an email (or email-keyed apps fail closed)
+
+Apps behind IAP resolve the user's identity from the `/subject/` suffix of
+`workforce_identity.iam_principal` in the IAP JWT and key ALL authorization on that
+email ([iap-identity.md](../../skills/onboard-app/references/iap-identity.md)). That
+suffix is whatever `google.subject` maps to - so the mapping MUST be an email-shaped
+claim. For Entra that is `preferred_username` (the UPN), which is this stack's default.
+
+If `google.subject` maps the opaque `assertion.sub`, every email-keyed app (the portal,
+any onboard-app tenant) rejects every user with 403 - IAP passes, the app fails closed.
+Outline does not catch this (it runs its own OIDC), so the first symptom is often the
+first non-Outline app.
+
+**Changing the mapping on a live pool poisons existing sessions**: the
+`auth.cloud.google` workforce session carries the subject minted at sign-in, so users
+keep presenting the old value until they re-federate. A fresh incognito window (or
+clearing cookies for `auth.cloud.google` and the app host) forces a clean sign-in.
 
 ## Deploy (two-phase, like the gateway)
 

@@ -35,6 +35,13 @@ Decoded, the payload contains exactly these claims - a real (sanitized) example:
 `/subject/`** (URL-decode it, then **normalize** it - see "Normalize the owner email"
 below). In the example: `dev@example.com`.
 
+> **Platform dependency:** that suffix is an email ONLY because the org edge maps
+> `google.subject` to an email-shaped claim (`assertion.preferred_username` for Entra -
+> the default in `iac/gcp-org`). If your `/subject/` value looks like an opaque id
+> rather than an email, the workforce provider's attribute mapping is wrong - fix it
+> there (see the "subject must be an email" section in the gcp-org README); no app-side
+> code can recover an email that was never mapped in.
+
 That resolved email is the platform's identity key: **key row ownership, RLS, and all
 authz on it.** It is the same value `platform_admins` rows and the app's owner are keyed
 by. (`sub` is an opaque `sts.google.com:` token - keep it for logging if you like, and key
@@ -212,8 +219,8 @@ continue" toast that reloads on click, so an in-progress action is never lost to
 error; a low-frequency heartbeat to a tiny endpoint can surface expiry proactively.
 
 Session **length** is a separate, platform-side lever (the workforce pool's
-`sessionDuration`, default 1h - operators raise it); this section is only about handling
-expiry gracefully whatever the length.
+`sessionDuration`; GCP's own default is 1h, the org-edge stack defaults it to 8h); this
+section is only about handling expiry gracefully whatever the length.
 
 ## Local development
 

@@ -69,9 +69,9 @@ variable "oidc_client_secret" {
 
 variable "oidc_attribute_mapping" {
   type        = map(string)
-  description = "Workforce-pool attribute mapping. Defaults to the Entra claim shape; override if your IdP uses different claim names."
+  description = "Workforce-pool attribute mapping. Defaults to the Entra claim shape; override if your IdP uses different claim names. google.subject MUST map an email-shaped claim (Entra: preferred_username = the UPN): apps behind IAP resolve the user's email from the /subject/ suffix of the workforce principal (see skills/onboard-app/references/iap-identity.md) and key ALL authorization on it. Mapping the opaque assertion.sub instead makes every email-keyed app fail closed with 403. Changing this on a live pool requires users to re-federate (fresh sign-in; the auth.cloud.google session caches the old subject)."
   default = {
-    "google.subject"      = "assertion.sub"
+    "google.subject"      = "assertion.preferred_username"
     "google.display_name" = "assertion.preferred_username"
     "google.groups"       = "assertion.groups"
   }
