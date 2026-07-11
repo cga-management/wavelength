@@ -277,11 +277,11 @@ Authorization: Bearer <fine-grained PAT, actions:write on the platform repo only
 {
   "ref": "main",
   "inputs": {
-    "repo":     "<your-org>/myapp",
-    "ref":      "main",
-    "slug":     "myapp",
-    "hostname": "myapp.labs.example.com",
-    "owner":    "dev@example.com"
+    "app_repo":        "<your-org>/myapp",
+    "ref":             "main",
+    "app_slug":        "myapp",
+    "app_hostname":    "myapp.labs.example.com",
+    "app_owner_email": "dev@example.com"
   }
 }
 ```

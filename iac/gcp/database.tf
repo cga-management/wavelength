@@ -63,9 +63,11 @@ resource "google_sql_database" "bifrost" {
 # app's runtime resolves role = admin if the IAP user is in wl_admin.platform_admins
 # OR is the app's injected OWNER, else user. Apps connect as the instance admin
 # (role-per-app is the least-privilege follow-up) so they can read this DB. The
-# platform_admins table + seed
-# are applied by a one-off migration step (no tofu SQL over the private IP); see the
-# app-stack module / wavelength-sdk.
+# platform_admins table + seed are OWNED BY THE PORTAL (portal-gcp): its idempotent
+# boot migrations CREATE TABLE IF NOT EXISTS and seed the bootstrap admin. There is
+# no landing-zone migration step (no tofu SQL path over the private IP); a tenant
+# app deployed before the portal's first boot will find the table absent and must
+# fall back to owner-only admin until the portal exists.
 resource "google_sql_database" "wl_admin" {
   name     = "wl_admin"
   instance = google_sql_database_instance.shared.name
