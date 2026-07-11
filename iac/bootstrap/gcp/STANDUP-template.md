@@ -42,8 +42,10 @@ them one at a time:
 - **Billing: grant the day admin `roles/billing.user`** on the billing account (a
   super-admin who created the account has it; Org Admin alone does not), so you can link
   the new project.
-- **Request a `SECURITY_POLICIES` quota increase** (IAM & Admin > Quotas) if you want
-  Cloud Armor / the MCP IP-allowlist - fresh projects start at 0. Until then keep
+- **Check the `SECURITY_POLICIES` quota** (IAM & Admin > Quotas) if you want Cloud
+  Armor / the MCP IP-allowlist. Fresh projects have shipped with 0 (request an
+  increase) but have also been observed defaulting to 10 (nothing to do - just flip
+  `enable_cloud_armor = true`). Until the quota is nonzero keep
   `enable_cloud_armor = false`.
 - **Secure-by-default org policies bite:** `iam.disableServiceAccountKeyCreation` blocks
   GCS HMAC keys (Outline uses gcsfuse instead - already handled), and domain-restricted
@@ -65,6 +67,13 @@ sharing on an org **blocks both**, so the gateway will not apply as-is. Options:
 Outline does not depend on the gateway, so this only matters if you deploy it.
 
 ## Phase 0 - platform
+
+> **Ordering note:** after step 2 (bootstrap), the landing zone (3) and the org edge
+> (5) are independent - each needs only the state bucket, and they can run in either
+> order or in parallel. Only an app (Phase 1) needs both. QUICKSTART lists the org
+> edge first because it is the once-per-org admin act; this runbook lists the landing
+> zone first because it contains the slow apply (Cloud SQL, 10-15 min) worth starting
+> early. Both orders are correct.
 
 0. **Org baseline** - [ORG-SETUP.md](ORG-SETUP.md). Confirm Cloud Identity on your org;
    verify the org node, a day-to-day admin holding `organizationAdmin` +

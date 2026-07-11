@@ -89,6 +89,19 @@ gcloud iam oauth-clients update wl-iap \
 Then `tofu destroy`. This removes the workforce pool + provider, the IAP client, and
 Cloud Armor. Only do this if no other instance shares the org edge.
 
+**Rebuilding in the same org within ~30 days?** Deleted workforce pools are
+soft-deleted and their IDs stay reserved until the `expireTime` shown by:
+
+```bash
+gcloud iam workforce-pools list --location=global --organization=<ORG_ID> --show-deleted
+```
+
+A re-apply with the same `workload` value then fails trying to recreate the same pool
+ID (default `wl-entra`). Either undelete the pool (`gcloud iam workforce-pools
+undelete`) and import it into the new state, or - simpler - set a different `workload`
+in the new instance's `iac/gcp-org` tfvars so it mints a fresh pool ID. App stacks read
+the pool from org-edge state outputs, so nothing else needs to change.
+
 ### 4. Landing zone (iac/gcp): expect two async lags, retry until clear
 
 `tofu destroy` in [iac/gcp/](iac/gcp/). Expect it to fail partway, **twice, for reasons
