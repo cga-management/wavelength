@@ -23,6 +23,8 @@
 #    app-stack/database.tf; one-time hardening SQL in references/db-hardening.md).
 #  - Any API-key secrets seeded in Secret Manager (values supplied out of band).
 #  - The app repo is private in the org and contains a root Dockerfile + iac/ (iap-lb vendored).
+#    Apps living in a subdirectory of their repo (e.g. the portal as portal-gcp/ inside the
+#    platform repo) set context_dir; the default "." keeps the root-layout behaviour.
 
 name: deploy-app
 # The run list shows which app each run deploys instead of N identical "deploy-app" rows.
@@ -51,6 +53,10 @@ on:
         description: "Image tag; leave blank to use the commit SHA (recommended, so redeploys roll a new revision)"
         required: false
         default: ""
+      context_dir:
+        description: "Directory inside the app repo holding the Dockerfile and iac/ (default: the repo root). Set for subdirectory apps, e.g. portal-gcp"
+        required: false
+        default: "."
 
 permissions:
   contents: read
@@ -80,7 +86,33 @@ jobs:
       IMAGE_TAG_INPUT: ${{ inputs.image_tag }}
       APP_REPO: ${{ inputs.app_repo }}
       APP_REF: ${{ inputs.ref }}
+      CONTEXT_DIR_INPUT: ${{ inputs.context_dir }}
     steps:
+      - name: Preflight - validate and normalise context_dir
+        # context_dir is a user-typed path that later scopes file checks, the docker build
+        # context, and the tofu -chdir directory inside the checkout. Reject anything that
+        # could escape the checkout (traversal, absolute paths, backslashes) before any
+        # other step consumes it. The normalised value is exported as CONTEXT_DIR.
+        run: |
+          set -euo pipefail
+          CONTEXT_DIR="${CONTEXT_DIR_INPUT:-.}"
+          case "${CONTEXT_DIR}" in
+            *..*|/*|*\\*)
+              echo "::error::context_dir '${CONTEXT_DIR_INPUT}' is invalid - it must be a relative path inside the app repo, with no '..', no leading '/', and no backslashes."
+              exit 1
+              ;;
+          esac
+          # Whitelist the characters (also blocks whitespace and newlines, so the value
+          # cannot smuggle extra variables into the GITHUB_ENV write below).
+          if ! [[ "${CONTEXT_DIR}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::context_dir '${CONTEXT_DIR_INPUT}' contains unsupported characters - only letters, digits, '.', '_', '-' and '/' are allowed."
+            exit 1
+          fi
+          # Strip one trailing slash so "portal-gcp/" and "portal-gcp" are equivalent.
+          CONTEXT_DIR="${CONTEXT_DIR%/}"
+          [ -n "${CONTEXT_DIR}" ] || CONTEXT_DIR="."
+          echo "CONTEXT_DIR=${CONTEXT_DIR}" >> "$GITHUB_ENV"
+
       - name: Preflight - platform repo configuration
         # Repo variables live outside git and CAN go missing (recreated repo, org
         # migration, accidental deletion). Without this check the run dies inside the
@@ -133,12 +165,15 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          if [ ! -f app/Dockerfile ]; then
-            echo "::error::${APP_REPO}@${APP_REF} has no Dockerfile at the repo root - the app is not onboarded. Run the onboard-app skill (steps 1-7) and push before deploying."
+          if [ ! -f "app/${CONTEXT_DIR}/Dockerfile" ]; then
+            echo "::error::${APP_REPO}@${APP_REF} has no Dockerfile in '${CONTEXT_DIR}/' (context_dir '${CONTEXT_DIR}') - the app is not onboarded. Run the onboard-app skill (steps 1-7) and push before deploying."
             fail=1
           fi
-          if [ ! -f app/iac/modules/iap-lb/main.tf ]; then
-            echo "::error::${APP_REPO}@${APP_REF} is missing the iac/ stack or the vendored iap-lb module (iac/modules/iap-lb/main.tf). Complete onboard-app step 6: copy the three module files from the platform repo and COMMIT them."
+          # The iap-lb module is normally vendored inside the app's iac/. A subdirectory app
+          # in the platform repo (context_dir set, e.g. portal-gcp) may instead reference the
+          # in-repo module at the repo root, so accept either location.
+          if [ ! -f "app/${CONTEXT_DIR}/iac/modules/iap-lb/main.tf" ] && [ ! -f app/iac/modules/iap-lb/main.tf ]; then
+            echo "::error::${APP_REPO}@${APP_REF} is missing the iac/ stack or the iap-lb module (looked for '${CONTEXT_DIR}/iac/modules/iap-lb/main.tf', then 'iac/modules/iap-lb/main.tf' at the repo root). Complete onboard-app step 6: copy the three module files from the platform repo and COMMIT them."
             fail=1
           fi
           exit "$fail"
@@ -178,15 +213,18 @@ jobs:
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
           AR="${REGION}-docker.pkg.dev/${PROJECT_ID}/ar-${WORKLOAD}-${ENVIRONMENT}"
           IMAGE="${AR}/${APP_SLUG}:${IMAGE_TAG}"
-          echo "Building ${IMAGE} from app/ (Dockerfile at app repo root)"
-          docker build -t "${IMAGE}" app
+          echo "Building ${IMAGE} from app/${CONTEXT_DIR} (Dockerfile at the context root)"
+          docker build -t "${IMAGE}" "app/${CONTEXT_DIR}"
           docker push "${IMAGE}"
 
       - name: Deploy the stack (tofu, two-phase for the IAP audience)
-        working-directory: app/iac
+        # The stack directory comes from the user-typed context_dir, so it is addressed via
+        # -chdir with the env-indirected CONTEXT_DIR rather than a working-directory that
+        # would interpolate the raw input.
         run: |
           set -euo pipefail
-          tofu init -input=false \
+          STACK_DIR="app/${CONTEXT_DIR}/iac"
+          tofu -chdir="${STACK_DIR}" init -input=false \
             -backend-config="bucket=${STATE_BUCKET}" \
             -backend-config="prefix=gcp-${APP_SLUG}"
 
@@ -201,18 +239,18 @@ jobs:
           )
 
           # Phase 1: create everything; IAP audience empty (app fails closed until phase 2).
-          tofu apply "${COMMON[@]}" -var "iap_audience="
+          tofu -chdir="${STACK_DIR}" apply "${COMMON[@]}" -var "iap_audience="
 
           # Phase 2: the LB backend now exists; the stack computes the correct IAP audience
           # (from the numeric backend id). Read it and re-apply so the app verifies tokens.
-          AUD="$(tofu output -raw computed_iap_audience)"
-          tofu apply "${COMMON[@]}" -var "iap_audience=${AUD}"
+          AUD="$(tofu -chdir="${STACK_DIR}" output -raw computed_iap_audience)"
+          tofu -chdir="${STACK_DIR}" apply "${COMMON[@]}" -var "iap_audience=${AUD}"
 
       - name: Summary
-        working-directory: app/iac
         run: |
           set -euo pipefail
+          STACK_DIR="app/${CONTEXT_DIR}/iac"
           echo "### Deployed ${APP_SLUG}" >> "$GITHUB_STEP_SUMMARY"
           echo "- host: https://${APP_HOSTNAME}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- lb ip: $(tofu output -raw lb_ip_address)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- lb ip: $(tofu -chdir="${STACK_DIR}" output -raw lb_ip_address)" >> "$GITHUB_STEP_SUMMARY"
           echo "The managed cert provisions once DNS resolves (~15-60 min on first deploy)." >> "$GITHUB_STEP_SUMMARY"
