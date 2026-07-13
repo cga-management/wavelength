@@ -13,10 +13,11 @@ perimeter until a platform admin presses Deploy once.
 
 ## Why the portal is platform, not a tenant app
 
-The portal is the platform's **control plane**. It is a first-class platform stack, a
-future `portal-gcp/` sibling of [`outline-gcp/`](../outline-gcp/README.md), not an app
-onboarded through the [onboard-app skill](../skills/onboard-app/SKILL.md). It deliberately
-deviates from the tenant-app rules in exactly two ways, and no others:
+The portal is the platform's **control plane**. It is a first-class platform stack -
+[`portal-gcp/`](../portal-gcp/README.md), a sibling of
+[`outline-gcp/`](../outline-gcp/README.md) - not an app onboarded through the
+[onboard-app skill](../skills/onboard-app/SKILL.md). It deliberately deviates from the
+tenant-app rules in exactly three ways, and no others:
 
 1. **It uses the shared `wl_admin` database directly.** Tenant apps get their own slice
    ([shared-db-rls.md](../skills/onboard-app/references/shared-db-rls.md)); the portal
@@ -26,13 +27,23 @@ deviates from the tenant-app rules in exactly two ways, and no others:
    registry tables below alongside it.
 2. **It holds one narrowly-scoped GitHub token** (`actions:write` on the platform repo,
    nothing else) to dispatch the platform deploy workflow.
+3. **It holds one read-only cloud capability: Cloud Logging read**, so app admins can see
+   their app's runtime logs on its card. This is the single exception to the
+   out-of-process rule below, because a live log tail cannot be a scheduled collector.
+   To keep the grant from cascading to every tenant app, the portal runs as its OWN
+   dedicated service account (not the shared app runtime SA) holding `logging.viewer`
+   and nothing else cloud-side; per-app scoping is enforced server-side (the same
+   app-admin authorization as cost/usage, plus a service-name filter), nothing is stored,
+   and log contents never enter the portal's own logs.
 
-That is the whole blast radius: one GitHub token plus one database. The portal holds
-**no cloud credentials** - it cannot touch Cloud Run, IAM, billing, or state. Every
-cloud-facing action happens either in the deploy workflow (under the platform's federated
-CI identity) or in out-of-process collector jobs (under their own scoped service account,
-see below). If the portal is fully compromised, the attacker can dispatch deploys of repos
-an admin must still have vetted, and read/write the registry - and that is all.
+That is the whole blast radius: one GitHub token, one database, one read-only log grant.
+The portal holds no other cloud credentials - it cannot touch Cloud Run, IAM, billing, or
+state. Every other cloud-facing action happens either in the deploy workflow (under the
+platform's federated CI identity) or in out-of-process collector jobs (under their own
+scoped service account, see below). If the portal is fully compromised, the attacker can
+dispatch deploys of repos an admin must still have vetted, read/write the registry, and
+read runtime logs (which the platform's logging rule already requires to be free of user
+data) - and that is all.
 
 In every other respect the portal follows the tenant rules: Cloud Run behind the shared
 IAP load balancer, scale to zero, internal ingress, identity from the IAP JWT

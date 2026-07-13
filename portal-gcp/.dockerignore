@@ -1,0 +1,10 @@
+node_modules
+npm-debug.log
+*.tf
+*.tfvars
+.terraform
+.terraform.lock.hcl
+tfplan
+README.md
+.gitignore
+.git
