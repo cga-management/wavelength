@@ -1,11 +1,12 @@
 # The Wavelength admin portal - the platform's CONTROL PLANE (docs/portal.md). A
 # first-class platform stack, a sibling of outline-gcp/, NOT an app onboarded through the
-# onboard-app skill. It deviates from the tenant-app rules in exactly two ways: it uses
-# the shared wl_admin database directly (wl_admin IS the registry it manages), and it
-# holds one narrowly-scoped GitHub token (actions:write on the platform repo) to dispatch
-# deploys. It holds NO cloud credentials - every cloud-facing action happens in the deploy
-# workflow (federated CI identity) or in the out-of-process collector jobs (their own
-# scoped SA, see collector.tf).
+# onboard-app skill. It deviates from the tenant-app rules in exactly three ways: it uses
+# the shared wl_admin database directly (wl_admin IS the registry it manages), it holds
+# one narrowly-scoped GitHub token (actions:write on the platform repo) to dispatch
+# deploys, and it holds one read-only Cloud Logging grant under its OWN dedicated SA
+# (per-app log panels; see identity.tf). Every other cloud-facing action happens in the
+# deploy workflow (federated CI identity) or in the out-of-process collector jobs (their
+# own scoped SA, see collector.tf).
 #
 # Reads two pieces of platform state so nothing is duplicated or hand-passed:
 #   lz   (landing zone) : network, Cloud SQL, Artifact Registry, app SA, wl_admin, DNS, telemetry dataset, cert map

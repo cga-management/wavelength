@@ -12,6 +12,13 @@ export function esc(s) {
     .replace(/'/g, "&#39;");
 }
 
+// href values must be http(s): esc() stops HTML injection but not a javascript: scheme.
+// Writes are validated in server.js; this render-time guard also covers rows written
+// out-of-band (defence in depth).
+function safeDocsUrl(raw) {
+  return raw && /^https?:\/\//i.test(raw) ? raw : "";
+}
+
 function icon(app) {
   const v = app.icon || "";
   if (/^https?:\/\//i.test(v)) return `<img class="icon" src="${esc(v)}" alt="">`;
@@ -119,7 +126,7 @@ export function grid(apps, ctx) {
       // small Details link. Non-openable cards fall back to the detail page.
       const primaryHref = openable ? `https://${esc(app.hostname)}` : `/app/${app.id}`;
       const details = openable ? `<a class="details" href="/app/${app.id}">Details &rarr;</a>` : "";
-      const docs = app.docs_url ? `<a class="docs" href="${esc(app.docs_url)}" target="_blank" rel="noopener">Docs</a>` : "";
+      const docs = safeDocsUrl(app.docs_url) ? `<a class="docs" href="${esc(app.docs_url)}" target="_blank" rel="noopener">Docs</a>` : "";
       return `<article class="card ${esc(app.status)}">
         <div class="card-head">${icon(app)}<h2><a class="card-title" href="${primaryHref}">${esc(app.name)}</a> ${statusBadge(app)}</h2></div>
         <p class="desc">${esc(app.description || "")}</p>
@@ -307,7 +314,7 @@ export function cardDetail({ app, perms, admins, deployments, cost, usage, deplo
     <dt>Ref</dt><dd>${esc(app.ref || "-")}</dd>
     <dt>Owner</dt><dd>${esc(app.owner_email)}</dd>
     <dt>Status</dt><dd>${esc(app.status)}${app.archive_reason ? ` - ${esc(app.archive_reason)}` : ""}</dd>
-    <dt>Docs</dt><dd>${app.docs_url ? `<a href="${esc(app.docs_url)}" target="_blank" rel="noopener">${esc(app.docs_url)}</a>` : "-"}</dd>
+    <dt>Docs</dt><dd>${safeDocsUrl(app.docs_url) ? `<a href="${esc(app.docs_url)}" target="_blank" rel="noopener">${esc(app.docs_url)}</a>` : "-"}</dd>
   </dl>`;
 
   const depTable = deployments.length

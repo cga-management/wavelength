@@ -61,6 +61,23 @@ function page403(req, msg) {
   return v.layout({ title: "Forbidden", body: v.errorPage(403, msg || "You do not have permission for this action."), user: req.identity?.email || "", branding: req.branding });
 }
 
+function pageInvalid(req, msg) {
+  return v.layout({ title: "Invalid input", body: v.errorPage(400, msg), user: req.identity?.email || "", branding: req.branding });
+}
+
+// URL fields rendered into href must be http(s) or empty. esc() stops HTML injection
+// but not a javascript: scheme, and the audience guaranteed to click a pending card's
+// Docs link is a platform admin - exactly who a hostile registration would target.
+function invalidDocsUrl(raw) {
+  const s = (raw || "").trim();
+  if (!s) return false;
+  try {
+    return !["http:", "https:"].includes(new URL(s).protocol);
+  } catch {
+    return true; // not parseable as an absolute URL
+  }
+}
+
 function render(res, req, { title, body, isPlatformAdmin: pa }) {
   res.type("html").send(v.layout({ title, body, user: req.identity.email, isPlatformAdmin: pa, branding: req.branding }));
 }
@@ -132,6 +149,7 @@ app.post("/register", async (req, res, next) => {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) errors.push("Slug must be lowercase letters, digits and hyphens.");
     if (!hostname.endsWith("." + APP_DOMAIN)) errors.push(`Hostname must be under ${APP_DOMAIN}.`);
     if (!(b.name || "").trim()) errors.push("Name is required.");
+    if (invalidDocsUrl(b.docs_url)) errors.push("Docs URL must be a full http(s) URL.");
     if (errors.length) {
       return render(res, req, { title: "Register app", body: v.registerForm(b, errors.join(" "), { appDomain: APP_DOMAIN, org: gh.platformRepo.split("/")[0] }), isPlatformAdmin: pa });
     }
@@ -273,6 +291,7 @@ app.post("/app/:id/edit", async (req, res, next) => {
     const perms = await permsFor(req.identity.email, app0);
     if (!perms.canEditMetadata()) return res.status(403).send(page403(req, "Only app admins can edit metadata."));
     const b = req.body;
+    if (invalidDocsUrl(b.docs_url)) return res.status(400).send(pageInvalid(req, "Docs URL must be a full http(s) URL."));
     // slug + hostname are intentionally not editable here (slug immutable once deployed).
     await repo.editMetadata(req.identity.email, app0, {
       name: (b.name || app0.name).trim(), description: b.description, icon: b.icon, docs_url: b.docs_url, ref: b.ref,

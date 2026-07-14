@@ -63,7 +63,7 @@ It still holds NO other cloud credentials.
 The portal is applied by hand from this repo (like outline). Self-deploy through its own
 card needs a context-dir input on `deploy-app.yml` (that workflow assumes the Dockerfile +
 vendored `iap-lb` at the app-repo root; the portal keeps IaC flat and references the
-in-repo module) - an upstream candidate, noted in `lib.tf`.
+in-repo module) - an upstream candidate, noted in `lb.tf`.
 
 1. **Build + push the image** to Artifact Registry:
    ```bash

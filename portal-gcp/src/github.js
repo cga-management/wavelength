@@ -1,6 +1,7 @@
 // GitHub deploy dispatch (docs/portal.md, "The deploy dispatch contract"). The portal
 // holds ONE narrowly-scoped token (actions:write on the platform repo only) to dispatch
-// the platform deploy workflow. It holds no cloud credentials.
+// the platform deploy workflow. Its only cloud credential is the read-only Cloud
+// Logging grant on its own SA (logs.js) - nothing here touches the cloud.
 //
 // The dispatch input names come from the workflow itself
 // (.github/workflows/deploy-app.yml): app_repo, ref, app_slug, app_hostname,

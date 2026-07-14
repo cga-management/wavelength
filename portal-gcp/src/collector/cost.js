@@ -148,8 +148,12 @@ export async function runCostCollector() {
     attributed: { remainder: round(remainder) }, apportioned: {}, aiSpend: {}, currency,
   });
 
-  // Credits as their own portfolio line (negative). Kept out of per-app tiers so app
-  // figures stay meaningful consumption numbers while an account credit runs.
+  // Credits as their own portfolio line. SIGN CONVENTION: the billing export delivers
+  // credit amounts as NEGATIVE numbers, and the portfolio total renders gross + credits,
+  // so creditsTotal <= 0 is load-bearing - a positive value would silently inflate the
+  // headline total. Kept out of per-app tiers so app figures stay meaningful consumption
+  // numbers while an account credit runs.
+  if (creditsTotal > 0) log.warn("credits total is positive - export sign convention changed?", { collector: "cost", creditsTotal: round(creditsTotal) });
   await upsertCost({
     slug: "__credits__", periodStart: iso(ps), periodEnd: iso(pe),
     attributed: { credits_applied: round(creditsTotal) }, apportioned: {}, aiSpend: {}, currency,
