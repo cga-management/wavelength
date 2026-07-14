@@ -46,6 +46,21 @@ different private repo, so checking out the app repo needs a real cross-repo cre
 | `app_hostname` | public hostname, e.g. `myapp.labs.example.com` |
 | `app_owner_email` | the deploying dev's email (app owner / admin) |
 | `image_tag` | optional; blank means the commit sha, which is what makes a redeploy roll a new Cloud Run revision |
+| `context_dir` | optional; directory inside the app repo holding the `Dockerfile` and `iac/` (default `.`, the repo root) |
+
+### Subdirectory apps (`context_dir`)
+
+By default the workflow expects the app repo's deployable unit at its root: a root
+`Dockerfile` and an `iac/` stack. `context_dir` relaxes that for apps that live in a
+subdirectory of a larger repo: the onboarded-repo preflight, the docker build context,
+and the tofu stack directory (`<context_dir>/iac`, addressed with `tofu -chdir`) are all
+scoped to that directory. The motivating case is the portal self-deploying per
+[portal.md](portal.md): its reference implementation is a `portal-gcp/` stack inside the
+platform repo, so its card carries the platform repo plus `context_dir = portal-gcp`.
+For that platform-repo case the preflight also accepts the `iap-lb` module at the repo
+root (`iac/modules/iap-lb/main.tf`) instead of vendored under the subdirectory. The
+value is validated before use ('..', a leading `/`, and backslashes are rejected), and
+the default `.` leaves root-layout app deploys exactly as before.
 
 ## Per-app prerequisites (before first deploy of that app)
 
