@@ -153,7 +153,7 @@ export async function runCostCollector() {
   // so creditsTotal <= 0 is load-bearing - a positive value would silently inflate the
   // headline total. Kept out of per-app tiers so app figures stay meaningful consumption
   // numbers while an account credit runs.
-  if (creditsTotal > 0) log.warn("credits total is positive - export sign convention changed?", { collector: "cost", creditsTotal: round(creditsTotal) });
+  if (creditsTotal > 0) log.warning("credits total is positive - export sign convention changed?", { collector: "cost", creditsTotal: round(creditsTotal) });
   await upsertCost({
     slug: "__credits__", periodStart: iso(ps), periodEnd: iso(pe),
     attributed: { credits_applied: round(creditsTotal) }, apportioned: {}, aiSpend: {}, currency,
