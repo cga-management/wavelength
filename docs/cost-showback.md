@@ -28,6 +28,14 @@ labelled tiers, never a single merged figure:
    service AND the revision template - the companion prerequisites change adds this to
    [`app-stack/run.tf`](../skills/onboard-app/references/app-stack/run.tf)) and any
    app-labelled storage. This tier is fact.
+
+   **Gross, not net-of-credits.** All tiers show gross consumption; account credits
+   (free trial, promotional) are NOT subtracted per app. A credit nets every row to a
+   meaningless 0.00 for as long as it lasts - observed live on a credited account: a
+   portal full of zeros that reads as "no cost data" - while the showback question is
+   what an app CONSUMES. Credits appear as their own explicit line in the portfolio
+   rollup (like the unattributed remainder), so the rollup still reconciles to the
+   actual invoice: sum(gross) + credits + remainder = the bill.
 2. **Apportioned** - the app's share of the shared floor, always labelled **estimated**:
    - **Cloud SQL** (the shared instance): split by each app's `pg_database_size()` share.
      This is a stated heuristic - database size is a proxy for load, not a measurement of

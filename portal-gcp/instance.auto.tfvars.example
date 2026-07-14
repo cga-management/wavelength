@@ -1,0 +1,22 @@
+# Copy to instance.auto.tfvars (gitignored) and fill in. Portal control-plane inputs.
+project_id   = "<PROJECT_ID>"
+region       = "europe-west2"
+state_bucket = "<STATE_BUCKET>" # from bootstrap.sh output, e.g. wl-tfstate-<token>
+
+portal_hostname = "portal.<DOMAIN>" # e.g. portal.labs.example.com
+platform_repo   = "<your-org>/<your-platform-repo>" # hosts deploy-app.yml
+
+# Seeded into wl_admin.platform_admins on boot, and set as the portal card owner. Without
+# at least one platform admin nobody can do a first deploy.
+bootstrap_admin_email = "<YOUR_IDP_UPN>" # the identity IAP resolves (Entra UPN), NOT a gcloud/alias email
+
+# Two-phase IAP audience: leave "" for phase 1, then set to `tofu output -raw
+# computed_iap_audience` and re-apply (phase 2). See README.
+# iap_audience = ""
+
+# Wire the deploy-dispatch token only AFTER seeding a version of the portal-github-token
+# secret (see README / secrets.tf). Keep false until then.
+# github_token_wired = false
+
+# Pin the portal image tag (built + pushed to Artifact Registry as <repo>/portal:<tag>).
+# portal_image_tag = "v1"

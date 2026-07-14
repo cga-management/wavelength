@@ -1,0 +1,12 @@
+# Real instance values (live project ids, hostnames) - commit only the .example.
+instance.auto.tfvars
+
+# tofu working state
+.terraform/
+tfplan*
+*.tfstate
+*.tfstate.*
+
+# node
+node_modules/
+npm-debug.log*
