@@ -32,6 +32,20 @@ const WINDOWS = [
   { name: "30d", days: 30 },
 ];
 
+// One partitioned table per log type is the contract (see the guard comment at the
+// call site). More than one match means the sink is writing date shards; refuse the
+// silent single-day undercount and say what to fix.
+function pickSingleTable(tables, kind) {
+  if (tables.length === 0) return null;
+  if (tables.length > 1) {
+    log.warning("multiple sink tables for one log type - sink is date-sharded, not partitioned", {
+      collector: "usage", kind, count: tables.length,
+      fix: "recreate the telemetry sink with bigquery_options.use_partitioned_tables = true (iac/gcp/telemetry.tf)",
+    });
+  }
+  return tables[tables.length - 1];
+}
+
 export async function runUsageCollector() {
   const { rows: apps } = await pool.query(
     `SELECT slug, hostname FROM apps WHERE hostname IS NOT NULL AND slug <> '__unattributed__'`,
@@ -45,8 +59,14 @@ export async function runUsageCollector() {
     findTables("requests%"), // external HTTPS LB request logs
     findTables("cloudaudit_googleapis_com_data_access%"), // IAP data-access audit logs
   ]);
-  const reqTable = reqTables[reqTables.length - 1] || null; // newest partition table
-  const iapTable = iapTables[iapTables.length - 1] || null;
+  // The landing-zone sink sets bigquery_options.use_partitioned_tables = true, so each
+  // log type is ONE day-partitioned table (verified live: a single `requests` table,
+  // DAY-partitioned on `timestamp`) and window queries scan the full window with
+  // partition pruning. If a sink were recreated WITHOUT that option, BigQuery writes
+  // date-sharded requests_YYYYMMDD tables instead - and taking the lexically-last one
+  // would silently scope every window to a single day (template issue #46). Guard it.
+  const reqTable = pickSingleTable(reqTables, "requests");
+  const iapTable = pickSingleTable(iapTables, "iap-audit");
 
   if (!reqTable && !iapTable) {
     log.info("no source data yet: LB request + IAP audit tables absent", { collector: "usage" });
