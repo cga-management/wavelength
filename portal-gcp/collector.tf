@@ -129,6 +129,13 @@ resource "google_cloud_run_v2_job" "collector" {
           name  = "TELEMETRY_DATASET"
           value = local.lz.telemetry_dataset_id
         }
+        # In email mode the usage collector also stores the 30d per-app user list; in
+        # hashed mode it stores counts only. The collector never needs the salt itself -
+        # tokens arrive pre-hashed in the log lines.
+        env {
+          name  = "USAGE_IDENTITY_MODE"
+          value = try(local.lz.usage_identity_mode, "email")
+        }
       }
     }
   }
