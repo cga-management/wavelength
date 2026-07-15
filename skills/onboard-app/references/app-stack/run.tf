@@ -71,6 +71,31 @@ resource "google_cloud_run_v2_service" "app" {
         value = "platform"
       }
 
+      # Usage-telemetry identity mode (docs/usage-telemetry.md): the platform-wide
+      # posture chosen on the landing zone. try() tolerates a landing zone that
+      # predates the output - the middleware then runs in its default email mode.
+      env {
+        name  = "USAGE_IDENTITY_MODE"
+        value = try(local.lz.usage_identity_mode, "email")
+      }
+
+      # Platform-wide usage-hash salt, read by the middleware ONLY in hashed mode.
+      # The shared app SA already holds project-wide secretAccessor, so no IAM change.
+      # Omitted entirely (dynamic) when the landing zone predates the salt secret, so
+      # this stack still validates and applies; the middleware falls back to email mode.
+      dynamic "env" {
+        for_each = try(local.lz.usage_hash_salt_secret_id, null) != null ? [1] : []
+        content {
+          name = "USAGE_HASH_SALT"
+          value_source {
+            secret_key_ref {
+              secret  = try(local.lz.usage_hash_salt_secret_id, null)
+              version = "latest"
+            }
+          }
+        }
+      }
+
       # API keys: add one env per key, sourced from Secret Manager (see ../secrets.md), e.g.
       # env {
       #   name = "OPENAI_API_KEY"

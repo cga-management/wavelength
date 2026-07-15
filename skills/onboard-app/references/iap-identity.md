@@ -113,8 +113,11 @@ and none of the failures name the missing package at request time:
 
 ```python
 # app/iap.py
+import hashlib
+import hmac
 import json
 import os
+from datetime import date
 from urllib.parse import unquote
 from fastapi import Request, HTTPException, Depends
 from google.auth.transport import requests as ga_requests
@@ -122,6 +125,37 @@ from google.oauth2 import id_token
 
 _IAP_AUDIENCE = os.environ["IAP_AUDIENCE"]  # = the stack's computed_iap_audience output
 _request = ga_requests.Request()
+
+# Usage-telemetry auth line (see "The usage-telemetry auth line" below). Mode + salt are
+# platform config injected by the app stack. Hashed mode without a salt falls back to
+# email mode with ONE startup warning: telemetry fails open, auth never blocks on it.
+_USAGE_IDENTITY_MODE = os.environ.get("USAGE_IDENTITY_MODE", "email")
+_USAGE_HASH_SALT = os.environ.get("USAGE_HASH_SALT", "")
+if _USAGE_IDENTITY_MODE == "hashed" and not _USAGE_HASH_SALT:
+    print(json.dumps({"severity": "WARNING", "message":
+                      "USAGE_IDENTITY_MODE=hashed but USAGE_HASH_SALT is empty - falling back to email mode"}))
+    _USAGE_IDENTITY_MODE = "email"
+_usage_seen: dict[str, set[str]] = {}  # date string -> tokens already emitted that day
+
+
+def _usage_token(email: str) -> str:
+    if _USAGE_IDENTITY_MODE == "hashed":
+        return hmac.new(_USAGE_HASH_SALT.encode(), email.encode(), hashlib.sha256).hexdigest()[:32]
+    return email
+
+
+def _emit_auth_line(email: str) -> None:
+    # At most one line per user per day per instance (scale-to-zero resets are harmless,
+    # the collector's DISTINCT dedupes across instances and restarts).
+    today = date.today().isoformat()
+    if today not in _usage_seen:
+        _usage_seen.clear()  # the date rolled - drop yesterday's set
+        _usage_seen[today] = set()
+    token = _usage_token(email)
+    if token not in _usage_seen[today]:
+        _usage_seen[today].add(token)
+        print(json.dumps({"severity": "INFO", "message": "authenticated",
+                          "event": "wl.auth", "user": token}))
 
 class CurrentUser:
     def __init__(self, email: str, opaque_id: str):
@@ -152,7 +186,9 @@ def current_user(request: Request) -> CurrentUser:
         wi = claims.get("workforce_identity") or {}
         print("no email-shaped claim; keys:", sorted(claims), "wi:", sorted(wi))
         raise HTTPException(status_code=403, detail="no email claim")
-    return CurrentUser(email=normalize_owner_email(email), opaque_id=claims.get("sub", ""))  # see "Normalize the owner email"
+    email = normalize_owner_email(email)  # see "Normalize the owner email"
+    _emit_auth_line(email)  # usage-telemetry auth line, at most once per user per day
+    return CurrentUser(email=email, opaque_id=claims.get("sub", ""))
 
 def _subject_suffix(s):
     # principal://iam.googleapis.com/locations/global/workforcePools/<pool>/subject/<email>
@@ -173,6 +209,36 @@ def _resolve_email(claims) -> str | None:
 #   def list_items(user: CurrentUser = Depends(current_user)): ...
 ```
 
+## The usage-telemetry auth line
+
+Workforce-federated IAP emits no per-request audit entries, so the platform's
+unique-user counts (docs/usage-telemetry.md) come from the apps themselves: after each
+successful verification the identity layer emits **one structured line per user per
+day**:
+
+```json
+{"severity": "INFO", "message": "authenticated", "event": "wl.auth", "user": "<token>"}
+```
+
+The landing-zone log sink routes ONLY these lines (matched on `event="wl.auth"`) to the
+telemetry dataset, where 90-day partition expiration bounds their life; the portal's
+collector aggregates them per Cloud Run service. What `user` carries is the platform's
+`usage_identity_mode` (a landing-zone variable, injected as `USAGE_IDENTITY_MODE`):
+
+- **email** (default): the normalized email. The portal can then show WHO uses your app
+  (a 30d user list) - visible only to your app's admins and platform admins. Everyone
+  with log or dataset access can already see these emails via stronger paths, so this
+  buys visibility without weakening anything.
+- **hashed**: `HMAC-SHA256(platform salt, normalized email)`, hex, first 32 chars. The
+  salt arrives as `USAGE_HASH_SALT` (Secret Manager, platform-wide). Counts only - the
+  portal shows no user list anywhere. This is the stricter posture, and it is ONE
+  landing-zone variable flip plus app redeploys away.
+
+Telemetry must never break sign-in: unknown mode or a missing salt means fall back to
+email mode (warn once at startup), and the emit itself sits after verification succeeds.
+This line is also the ONE sanctioned exception to "never log user identifiers to shared
+logs" - see rule 5 in `logging.md`.
+
 ## Framework-agnostic recipe
 
 1. Read `X-Goog-IAP-JWT-Assertion`; 401 if absent.
@@ -183,8 +249,12 @@ def _resolve_email(claims) -> str | None:
 3. Resolve the email per the scan above; **normalize it** with `normalize_owner_email`
    (see "Normalize the owner email"). That normalized email is the owner id. No
    email-shaped value: 403, log claim key names only.
-4. Make the identity available to every request handler (middleware / request context).
-5. Pass the email down to the DB layer for RLS - see `shared-db-rls.md`. Admin is
+4. Emit the usage-telemetry auth line (see the section above): token = the normalized
+   email, or its keyed hash when `USAGE_IDENTITY_MODE=hashed` (salt from
+   `USAGE_HASH_SALT`); dedupe in-process per user per day; fall back to email mode if
+   the salt is missing. Never let this step fail the request.
+5. Make the identity available to every request handler (middleware / request context).
+6. Pass the email down to the DB layer for RLS - see `shared-db-rls.md`. Admin is
    entitlement plus an opt-in MODE (see that file); a request runs with admin powers only
    while the user has the mode switched on.
 
