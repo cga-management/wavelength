@@ -34,6 +34,7 @@ service anyone runs for you.
 | `portal-gcp/` | The admin portal - the platform control plane (registry, gated deploys, cost/usage showback, runtime logs) per `docs/portal.md` |
 | `skills/` | Claude Code skills: **onboard-app** (take a local app to deployed-behind-IAP, agent-driven), build standard, PII assessment, conformance |
 | `docs/` | Design docs: the admin portal control plane, per-app cost showback, per-app usage telemetry |
+| `CONTRIBUTING.md` | How to feed changes back: the PR-only model, acceptance criteria, and the leak-gate CI |
 | `TEARDOWN.md` | Destroy runbook: order, the async producer-release gotchas, bootstrap cleanup |
 | `scanner/`, `archive/` | Data-estate scanner and inactivity-archive jobs (placeholders) |
 

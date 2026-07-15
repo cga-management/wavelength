@@ -1,0 +1,139 @@
+name: Leak gate
+
+# Greps every PR diff for things that must never enter the public template
+# (see CONTRIBUTING.md, "Acceptance criteria"). Two layers:
+#
+#   1. Generic checks, always on: typographic dashes, real tfvars, state/plan
+#      files, private-key blocks.
+#   2. Private patterns: an extended regex held ONLY in the LEAK_PATTERNS repo
+#      secret, so the instance identifiers being guarded never appear in this
+#      public repo. Unset (e.g. on forks) => the step skips silently.
+#
+# Dependency-free by design: bash + git + grep/awk only.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  leak-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so both the PR base and head SHAs are present for the diff.
+          fetch-depth: 0
+
+      - name: Compute the PR diff
+        # Event SHAs are routed through env vars, never interpolated into the
+        # script, so a crafted branch name is data, not shell.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          GATE="${RUNNER_TEMP}/leak-gate"
+          mkdir -p "${GATE}"
+          echo "GATE=${GATE}" >> "$GITHUB_ENV"
+
+          # base...head = only what this PR adds, regardless of how far main moved.
+          git diff "${BASE_SHA}...${HEAD_SHA}" > "${GATE}/pr.diff"
+          git diff --name-only --diff-filter=A "${BASE_SHA}...${HEAD_SHA}" \
+            > "${GATE}/added-files.txt"
+
+          # Flatten the added lines of the diff to "file:line:content" so the
+          # checks below can name the offending file and line.
+          awk '
+            /^\+\+\+ b\// { file = substr($0, 7); next }
+            /^\+\+\+ /    { file = ""; next }
+            /^@@/ {
+              if (match($0, /\+[0-9]+/)) line = substr($0, RSTART + 1, RLENGTH - 1) + 0
+              next
+            }
+            /^\+/ { if (file != "") printf "%s:%d:%s\n", file, line, substr($0, 2); line++; next }
+            /^ /  { line++ }
+          ' "${GATE}/pr.diff" > "${GATE}/added-lines.txt"
+
+          echo "Diff: $(wc -l < "${GATE}/added-lines.txt") added lines," \
+               "$(wc -l < "${GATE}/added-files.txt") added files."
+
+      - name: Generic checks (always on)
+        run: |
+          set -euo pipefail
+          fail=0
+
+          # All four dash patterns are assembled at runtime so this file never
+          # contains them literally (it would otherwise fail its own gate):
+          # EM = U+2014, EN = U+2013, plus the two HTML entities.
+          EM="$(printf '\342\200\224')"
+          EN="$(printf '\342\200\223')"
+          EM_ENT="$(printf '&%s' 'mdash;')"
+          EN_ENT="$(printf '&%s' 'ndash;')"
+
+          annotate() { # $1 = message; stdin = matching "file[:line[:content]]" rows
+            while IFS=: read -r f l _; do
+              case "${l}" in
+                '' | *[!0-9]*) echo "::error file=${f}::${1} (see CONTRIBUTING.md, Acceptance criteria)" ;;
+                *) echo "::error file=${f},line=${l}::${1} (see CONTRIBUTING.md, Acceptance criteria)" ;;
+              esac
+            done
+          }
+
+          # (a) em/en dashes - characters or HTML entities - in added lines.
+          hits="$(grep -e "${EM}" -e "${EN}" -e "${EM_ENT}" -e "${EN_ENT}" \
+            "${GATE}/added-lines.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "em/en dash (character or HTML entity) - use a hyphen or a comma" <<< "${hits}"
+          fi
+
+          # (b) added real tfvars: *.auto.tfvars is per-instance config; only the
+          #     *.example variants belong in the template.
+          hits="$(grep -E '\.auto\.tfvars$' "${GATE}/added-files.txt" | grep -v '\.example' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "real *.auto.tfvars added - only *.auto.tfvars.example belongs in the template" <<< "${hits}"
+          fi
+
+          # (c) added state/plan/.terraform paths - never committed anywhere,
+          #     least of all the public template.
+          hits="$(grep -E '\.tfstate|\.tfplan|(^|/)\.terraform/' "${GATE}/added-files.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "state/plan artifact added (.tfstate/.tfplan/.terraform) - remove it" <<< "${hits}"
+          fi
+
+          # (d) private-key blocks in added lines.
+          hits="$(grep -E 'BEGIN [A-Z ]*PRIVATE KEY' "${GATE}/added-lines.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "private key material added - revoke the key and remove it" <<< "${hits}"
+          fi
+
+          if [ "${fail}" -ne 0 ]; then
+            echo "::error::Leak gate failed - fix the annotated lines and push again (CONTRIBUTING.md has the full criteria)."
+            exit 1
+          fi
+          echo "Generic checks clean."
+
+      - name: Private patterns (LEAK_PATTERNS repo secret)
+        # Secrets cannot be tested in an `if:` expression, so the secret is read
+        # into an env var and emptiness is tested in bash. The pattern value is
+        # never echoed; matches report file:line only.
+        env:
+          LEAK_PATTERNS: ${{ secrets.LEAK_PATTERNS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LEAK_PATTERNS}" ]; then
+            echo "::notice::LEAK_PATTERNS secret is not set - private pattern scan skipped (expected on forks; operators set it per CONTRIBUTING.md)."
+            exit 0
+          fi
+          hits="$(grep -Ei -e "${LEAK_PATTERNS}" "${GATE}/added-lines.txt" || true)"
+          if [ -n "${hits}" ]; then
+            while IFS=: read -r f l _; do
+              echo "::error file=${f},line=${l}::matches a private leak pattern - replace the instance identifier with a placeholder (see CONTRIBUTING.md, Acceptance criteria)."
+            done <<< "${hits}"
+            echo "::error::Leak gate failed - the PR contains instance identifiers."
+            exit 1
+          fi
+          echo "Private pattern scan clean."
