@@ -1,0 +1,251 @@
+name: Leak gate
+
+# Greps every PR diff for things that must never enter the public template
+# (see CONTRIBUTING.md, "Acceptance criteria"). Two layers:
+#
+#   1. Format checks, always on: typographic dashes, real tfvars, state/plan
+#      files, private-key blocks.
+#   2. Instance-value checks, always on: added lines carrying what looks like
+#      real, non-defaulted instance config - email addresses, GCP project
+#      ids/numbers, billing ids, UUIDs, state-bucket tokens, workforce pool
+#      ids, hostnames outside the template's placeholder set. The template
+#      ships only placeholders; contributors purge their own values before
+#      sending a PR, and anything value-shaped is grounds to reject it.
+#
+# Dependency-free by design: bash + git + grep/awk only.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  leak-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so both the PR base and head SHAs are present for the diff.
+          fetch-depth: 0
+
+      - name: Compute the PR diff
+        # Event SHAs are routed through env vars, never interpolated into the
+        # script, so a crafted branch name is data, not shell.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          GATE="${RUNNER_TEMP}/leak-gate"
+          mkdir -p "${GATE}"
+          echo "GATE=${GATE}" >> "$GITHUB_ENV"
+
+          # base...head = only what this PR adds, regardless of how far main moved.
+          git diff "${BASE_SHA}...${HEAD_SHA}" > "${GATE}/pr.diff"
+          git diff --name-only --diff-filter=A "${BASE_SHA}...${HEAD_SHA}" \
+            > "${GATE}/added-files.txt"
+
+          # Flatten the added lines of the diff to "file:line:content" so the
+          # checks below can name the offending file and line.
+          awk '
+            /^\+\+\+ b\// { file = substr($0, 7); next }
+            /^\+\+\+ /    { file = ""; next }
+            /^@@/ {
+              if (match($0, /\+[0-9]+/)) line = substr($0, RSTART + 1, RLENGTH - 1) + 0
+              next
+            }
+            /^\+/ { if (file != "") printf "%s:%d:%s\n", file, line, substr($0, 2); line++; next }
+            /^ /  { line++ }
+          ' "${GATE}/pr.diff" > "${GATE}/added-lines.txt"
+
+          echo "Diff: $(wc -l < "${GATE}/added-lines.txt") added lines," \
+               "$(wc -l < "${GATE}/added-files.txt") added files."
+
+      - name: Format checks (always on)
+        run: |
+          set -euo pipefail
+          fail=0
+
+          # All four dash patterns are assembled at runtime so this file never
+          # contains them literally (it would otherwise fail its own gate):
+          # EM = U+2014, EN = U+2013, plus the two HTML entities.
+          EM="$(printf '\342\200\224')"
+          EN="$(printf '\342\200\223')"
+          EM_ENT="$(printf '&%s' 'mdash;')"
+          EN_ENT="$(printf '&%s' 'ndash;')"
+
+          annotate() { # $1 = message; stdin = matching "file[:line[:content]]" rows
+            while IFS=: read -r f l _; do
+              case "${l}" in
+                '' | *[!0-9]*) echo "::error file=${f}::${1} (see CONTRIBUTING.md, Acceptance criteria)" ;;
+                *) echo "::error file=${f},line=${l}::${1} (see CONTRIBUTING.md, Acceptance criteria)" ;;
+              esac
+            done
+          }
+
+          # (a) em/en dashes - characters or HTML entities - in added lines.
+          hits="$(grep -e "${EM}" -e "${EN}" -e "${EM_ENT}" -e "${EN_ENT}" \
+            "${GATE}/added-lines.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "em/en dash (character or HTML entity) - use a hyphen or a comma" <<< "${hits}"
+          fi
+
+          # (b) added real tfvars: *.auto.tfvars is per-instance config; only the
+          #     *.example variants belong in the template.
+          hits="$(grep -E '\.auto\.tfvars$' "${GATE}/added-files.txt" | grep -v '\.example' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "real *.auto.tfvars added - only *.auto.tfvars.example belongs in the template" <<< "${hits}"
+          fi
+
+          # (c) added state/plan/.terraform paths - never committed anywhere,
+          #     least of all the public template.
+          hits="$(grep -E '\.tfstate|\.tfplan|(^|/)\.terraform/' "${GATE}/added-files.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "state/plan artifact added (.tfstate/.tfplan/.terraform) - remove it" <<< "${hits}"
+          fi
+
+          # (d) private-key blocks in added lines.
+          hits="$(grep -E 'BEGIN [A-Z ]*PRIVATE KEY' "${GATE}/added-lines.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "private key material added - revoke the key and remove it" <<< "${hits}"
+          fi
+
+          if [ "${fail}" -ne 0 ]; then
+            echo "::error::Leak gate failed - fix the annotated lines and push again (CONTRIBUTING.md has the full criteria)."
+            exit 1
+          fi
+          echo "Generic checks clean."
+
+      - name: Instance-value checks (always on)
+        # Heuristics for values that should have been a placeholder. Documented
+        # placeholder forms pass: example.com domains, @<...> emails, 123456
+        # id digits, the 123456789012 project number, the all-zero UUID.
+        run: |
+          set -euo pipefail
+          fail=0
+
+          annotate() { # $1 = message; stdin = matching "file:line:content" rows
+            while IFS=: read -r f l _; do
+              case "${l}" in
+                '' | *[!0-9]*) echo "::error file=${f}::${1} (see CONTRIBUTING.md, Acceptance criteria)" ;;
+                *) echo "::error file=${f},line=${l}::${1} (see CONTRIBUTING.md, Acceptance criteria)" ;;
+              esac
+            done
+          }
+
+          # Generated dependency metadata is hashes and registry URLs; skip it.
+          grep -Ev '^([^:]*/)?(package-lock\.json|package\.json|\.terraform\.lock\.hcl):' \
+            "${GATE}/added-lines.txt" > "${GATE}/checked-lines.txt" || true
+
+          # (e) email addresses that are not documentation placeholders.
+          hits="$(grep -E '[A-Za-z0-9._%+-]+@[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}' \
+            "${GATE}/checked-lines.txt" | grep -Ev '@example\.(com|org|net)|@<|@\$\{' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "real-looking email address - use user@example.com or @<...> placeholders" <<< "${hits}"
+          fi
+
+          # (f) 12-digit numbers = GCP project/org numbers. Hex boundaries keep
+          #     lock hashes and hex ids out; 123456789012 is the documented
+          #     placeholder for examples.
+          hits="$(grep -E '(^|[^0-9a-fA-F])[0-9]{12}([^0-9a-fA-F]|$)' \
+            "${GATE}/checked-lines.txt" | grep -Ev '123456789012|000000000000' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "12-digit number looks like a GCP project/org number - use 123456789012 in examples" <<< "${hits}"
+          fi
+
+          # (g) GCP-console-shaped project ids (name-123456); use -123456 digits
+          #     or <PROJECT_ID> in examples.
+          hits="$(grep -E '(^|[^0-9a-zA-Z_-])[a-z][a-z0-9-]*-[0-9]{6}([^0-9]|$)' \
+            "${GATE}/checked-lines.txt" | grep -v -- '-123456' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "looks like a real GCP project id - use <PROJECT_ID> or my-project-123456" <<< "${hits}"
+          fi
+
+          # (h) billing account ids.
+          hits="$(grep -E '[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}' "${GATE}/checked-lines.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "looks like a billing account id - use <BILLING_ACCOUNT>" <<< "${hits}"
+          fi
+
+          # (i) UUIDs (tenant ids, client ids); the all-zero UUID is the placeholder.
+          hits="$(grep -E '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' \
+            "${GATE}/checked-lines.txt" | grep -v '00000000-0000-0000-0000-000000000000' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "UUID looks like a real tenant/client id - use 00000000-0000-0000-0000-000000000000" <<< "${hits}"
+          fi
+
+          # (j) state bucket with a real token (the placeholder is tfstate-<token>).
+          hits="$(grep -E 'tfstate-[0-9a-f]{4,}' "${GATE}/checked-lines.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "state bucket carries a real token - write tfstate-<token>" <<< "${hits}"
+          fi
+
+          # (k) concrete workforce / workload identity pool ids (placeholders
+          #     start with < or a shell/tofu interpolation).
+          hits="$(grep -E '(workforcePools|workloadIdentityPools)/[a-zA-Z0-9]' \
+            "${GATE}/checked-lines.txt" | grep -Ev '(workforcePools|workloadIdentityPools)/(<|\$)' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "concrete identity pool id - use <pool>-style placeholders" <<< "${hits}"
+          fi
+
+          # (l) real-looking hostnames outside the template's placeholder set.
+          #     Code and stylesheets are skipped (JS/CSS property chains collide
+          #     hopelessly); token-level awk so an allowlisted domain on the
+          #     same row cannot mask a real one.
+          hits="$(grep -Ev '^[^:]*\.(js|mjs|cjs|css):' "${GATE}/checked-lines.txt" \
+            | awk '
+              BEGIN {
+                n = split("example.com example.org example.net example.internal " \
+                          "google.com googleapis.com gserviceaccount.com auth.cloud " \
+                          "gstatic.com github.com githubusercontent.com github.io " \
+                          "microsoft.com microsoftonline.com auth0.com " \
+                          "claude.com claude.ai anthropic.com resend.com " \
+                          "npmjs.org opentofu.org terraform.io hashicorp.com " \
+                          "apache.org pkg.dev run.app docker.io docker.com gcr.io " \
+                          "quay.io gmail.com", allow, " ")
+              }
+              {
+                row = $0
+                rest = row
+                bad = 0
+                while (match(rest, /([a-zA-Z0-9-]+\.)+(com|net|org|io|dev|app|ai|biz|cloud|uk)/)) {
+                  tok = substr(rest, RSTART, RLENGTH)
+                  after = substr(rest, RSTART + RLENGTH, 2)
+                  rest = substr(rest, RSTART + RLENGTH)
+                  # not a hostname: the match continues into a longer word, or
+                  # is an identifier chain (service.app.uri)
+                  if (after ~ /^[a-zA-Z0-9_-]/) continue
+                  if (after ~ /^\.[a-zA-Z0-9_]/) continue
+                  tok = tolower(tok)
+                  # single-label + code-collision TLD (google_sql_user.app) is a
+                  # resource reference, not a hostname
+                  if (tok ~ /^[a-z0-9-]+\.(app|ai|io|dev|cloud)$/) continue
+                  ok = 0
+                  for (i = 1; i <= n; i++) {
+                    a = allow[i]
+                    if (tok == a || substr(tok, length(tok) - length(a), length(a) + 1) == "." a) { ok = 1; break }
+                  }
+                  if (!ok) bad = 1
+                }
+                if (bad) print row
+              }' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "real-looking hostname - use the example.com placeholder domains" <<< "${hits}"
+          fi
+
+          if [ "${fail}" -ne 0 ]; then
+            echo "::error::Leak gate failed - the PR carries instance values; replace them with the documented placeholders and push again."
+            exit 1
+          fi
+          echo "Instance-value checks clean."
