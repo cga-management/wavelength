@@ -2,7 +2,7 @@
 // resolveIdentity - never on anything the client asserts (docs/portal.md, "Authorization,
 // action by action"). "App admin" is a per-app relationship, not a global tier.
 //
-// The 12-row table:
+// The 16-row table:
 //   View deployed app cards                         User / AppAdmin / PlatformAdmin
 //   View a pending (registered) card                owner only / AppAdmin(own) / PlatformAdmin
 //   Open an app                                      all
@@ -15,6 +15,10 @@
 //   Manage platform admins                           PlatformAdmin (never delete last row)
 //   View an app's cost and usage                     AppAdmin(own) / PlatformAdmin
 //   View portfolio cost and usage                    PlatformAdmin
+//   View backups (dumps + instance protection)       owner / AppAdmin(own) / PlatformAdmin
+//   Restore a backup                                  PlatformAdmin ONLY
+//   Delete a backup                                   PlatformAdmin ONLY
+//   Deploy a pinned (previously successful) sha       PlatformAdmin ONLY
 
 import { pool } from "./db.js";
 
@@ -55,6 +59,12 @@ export async function permsFor(email, app) {
     canManageAppAdmins: () => platformAdmin,
     canManagePlatformAdmins: () => platformAdmin,
     canSeeCostUsage: () => appAdmin, // own app for app admins; all for platform admins
+    // Backups: the app's people get read-only reassurance (their dumps exist, the
+    // instance is protected); every ACTION on a backup is platform-admin only.
+    canViewBackups: () => appAdmin || owner, // appAdmin is true for platform admins
+    canRestoreBackup: () => platformAdmin,
+    canDeleteBackup: () => platformAdmin,
+    canDeployPinned: () => platformAdmin,
   };
 }
 

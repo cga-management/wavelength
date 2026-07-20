@@ -39,6 +39,23 @@ resource "google_sql_database_instance" "shared" {
       private_network = google_compute_network.platform.id
       ssl_mode        = "ENCRYPTED_ONLY"
     }
+
+    # This one instance holds the platform registry (wl_admin) and every app's data,
+    # so it must be recoverable - API-created instances default to backups OFF. PITR
+    # is the recovery path for a shared instance: clone the instance at a timestamp,
+    # then restore just the one affected database. 7 nightly backups + 7 days of
+    # transaction logs is the modest end of the dial: on a db-f1-micro dev-scale
+    # instance the backup and WAL storage is pennies, while a longer window buys
+    # nothing (per-deploy dumps below cover the per-app story for 30 days).
+    backup_configuration {
+      enabled                        = true
+      start_time                     = "02:00"
+      point_in_time_recovery_enabled = true
+      transaction_log_retention_days = 7
+      backup_retention_settings {
+        retained_backups = 7
+      }
+    }
   }
 }
 
@@ -79,6 +96,54 @@ resource "google_sql_database" "wl_admin" {
 resource "google_sql_database" "outline" {
   name     = "outline"
   instance = google_sql_database_instance.shared.name
+}
+
+# --- Pre-deploy database exports ----------------------------------------------
+# deploy-app.yml dumps the target app's database here before each deploy. App
+# migrations run when the new Cloud Run revision boots, and restoring an instance
+# backup would roll back EVERY app on the shared instance - this per-database dump
+# is the per-app rollback point. Exports are only rollback insurance, so objects
+# expire after 30 days. Google-managed encryption (the default) is deliberate: no
+# CMEK exists anywhere else in the platform to key it from.
+resource "google_storage_bucket" "db_pre_deploy" {
+  name     = "${var.workload}-db-pre-deploy-${local.instance_id}"
+  location = var.region
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  labels = local.labels
+
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
+# gcloud sql export sql writes the dump as the INSTANCE's service account, not the
+# caller, so that SA needs object write on the bucket. Without this grant the export
+# fails with a permission error that points at the wrong identity (the caller's).
+resource "google_storage_bucket_iam_member" "db_pre_deploy_sql_writer" {
+  bucket = google_storage_bucket.db_pre_deploy.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_sql_database_instance.shared.service_account_email_address}"
+}
+
+# The CI service account (the deploy workflows' WIF identity) also needs object
+# access here: deploy-app.yml stamps custom metadata onto the dump it just exported
+# (objects update implies objects get), and restore-app-db.yml describes the chosen
+# dump before importing it. Its project-level cloudsql.admin covers the export and
+# import calls but grants nothing on this bucket. The SA is created by
+# iac/bootstrap/gcp/bootstrap.sh under the fixed <workload>-github-oidc name, so the
+# email is derived rather than read from state.
+resource "google_storage_bucket_iam_member" "db_pre_deploy_ci" {
+  bucket = google_storage_bucket.db_pre_deploy.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${var.workload}-github-oidc@${var.project_id}.iam.gserviceaccount.com"
 }
 
 # --- Secrets into Secret Manager (never plaintext in config/state) -----------

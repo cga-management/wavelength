@@ -15,6 +15,8 @@ const TOKEN = process.env.PORTAL_GITHUB_TOKEN || "";
 const PLATFORM_REPO = process.env.PORTAL_PLATFORM_REPO || "";
 if (!PLATFORM_REPO) throw new Error("PORTAL_PLATFORM_REPO is required (owner/repo of the platform repo) - set by the portal stack from var.platform_repo");
 const WORKFLOW_FILE = process.env.PORTAL_DEPLOY_WORKFLOW || "deploy-app.yml";
+const UPDATE_WORKFLOW_FILE = process.env.PORTAL_UPDATE_WORKFLOW || "update-platform-app.yml";
+const RESTORE_WORKFLOW_FILE = process.env.PORTAL_RESTORE_WORKFLOW || "restore-app-db.yml";
 const API = "https://api.github.com";
 
 // When the token is missing/unseeded the Deploy button renders disabled with a clear
@@ -57,6 +59,55 @@ export async function dispatchDeploy({ appRepo, ref, slug, hostname, ownerEmail 
   throw new Error(`dispatch failed: ${res.status}`);
 }
 
+// Dispatch the platform-app update workflow (image-only; see
+// .github/workflows/update-platform-app.yml). Same 204-accepted semantics as
+// dispatchDeploy - the caller records a 'dispatched' row and later locates the run.
+export async function dispatchPlatformUpdate({ slug, imageTag, requestedBy }) {
+  if (!tokenConfigured()) throw new Error("dispatch token not configured");
+  const url = `${API}/repos/${PLATFORM_REPO}/actions/workflows/${UPDATE_WORKFLOW_FILE}/dispatches`;
+  const body = {
+    ref: "main", // the ref of the WORKFLOW in the platform repo
+    inputs: {
+      app_slug: slug,
+      image_tag: imageTag,
+      requested_by: requestedBy || "",
+    },
+  };
+  const res = await fetch(url, { method: "POST", headers: headers(), body: JSON.stringify(body) });
+  if (res.status === 204) {
+    log.info("platform update dispatched", { slug, imageTag, action: "app.update.dispatch" });
+    return true;
+  }
+  const detail = await res.text().catch(() => "");
+  log.error("platform update dispatch rejected", { slug, status: res.status, detail: detail.slice(0, 200) });
+  throw new Error(`dispatch failed: ${res.status}`);
+}
+
+// Dispatch the database restore workflow (.github/workflows/restore-app-db.yml): it
+// takes a pre-restore safety dump, then loads the chosen dump over the app's database.
+// Same 204-accepted semantics as dispatchDeploy - the caller records a 'dispatched'
+// deployments row (kind 'restore', ref = the backup object) and later locates the run.
+export async function dispatchRestore({ slug, backupObject, requestedBy }) {
+  if (!tokenConfigured()) throw new Error("dispatch token not configured");
+  const url = `${API}/repos/${PLATFORM_REPO}/actions/workflows/${RESTORE_WORKFLOW_FILE}/dispatches`;
+  const body = {
+    ref: "main", // the ref of the WORKFLOW in the platform repo
+    inputs: {
+      app_slug: slug,
+      backup_object: backupObject,
+      requested_by: requestedBy || "",
+    },
+  };
+  const res = await fetch(url, { method: "POST", headers: headers(), body: JSON.stringify(body) });
+  if (res.status === 204) {
+    log.info("restore dispatched", { slug, backupObject, action: "app.restore_backup.dispatch" });
+    return true;
+  }
+  const detail = await res.text().catch(() => "");
+  log.error("restore dispatch rejected", { slug, status: res.status, detail: detail.slice(0, 200) });
+  throw new Error(`dispatch failed: ${res.status}`);
+}
+
 // Map GitHub run status/conclusion to our deployments.status enum.
 function mapStatus(run) {
   if (run.status !== "completed") return "running";
@@ -65,19 +116,24 @@ function mapStatus(run) {
 
 // Locate the workflow run this deployment dispatched (run-name embeds the slug) and return
 // { runId, status, sha, finished } if found. Returns null if not yet locatable.
-export async function locateRun({ slug, since }) {
+// The run-name formats are load-bearing contracts with the workflows:
+//   deploy-app.yml            "deploy <slug> (<repo>@<ref>)"
+//   update-platform-app.yml   "update <slug> (<tag>)"
+//   restore-app-db.yml        "restore <slug> (<object>)"
+// Callers for updates pass workflow/prefix; the defaults keep deploy callers unchanged.
+export async function locateRun({ slug, since, workflow = WORKFLOW_FILE, prefix }) {
   if (!tokenConfigured()) return null;
-  const url = `${API}/repos/${PLATFORM_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=30`;
+  const url = `${API}/repos/${PLATFORM_REPO}/actions/workflows/${workflow}/runs?event=workflow_dispatch&per_page=30`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
-    log.warning("actions runs list failed", { slug, status: res.status });
+    log.warning("actions runs list failed", { slug, workflow, status: res.status });
     return null;
   }
   const data = await res.json();
   const runs = data.workflow_runs || [];
-  // run-name: "deploy <slug> (<repo>@<ref>)". Match on the slug token and, to avoid
-  // catching an older run, only runs created at/after this deployment's dispatch time.
-  const needle = `deploy ${slug} `;
+  // Match on the slug token and, to avoid catching an older run, only runs created
+  // at/after this deployment's dispatch time.
+  const needle = prefix || `deploy ${slug} `;
   // GitHub creates the run BEFORE our deployments row is inserted, so an exact
   // created_at >= since comparison can never match the run it dispatched. Allow
   // three minutes of slack.
@@ -96,3 +152,5 @@ export async function locateRun({ slug, since }) {
 }
 
 export const platformRepo = PLATFORM_REPO;
+export const updateWorkflowFile = UPDATE_WORKFLOW_FILE;
+export const restoreWorkflowFile = RESTORE_WORKFLOW_FILE;

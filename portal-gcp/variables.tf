@@ -127,3 +127,22 @@ variable "collector_memory" {
   default     = "512Mi"
   description = "Memory for the collector job."
 }
+
+# --- Scheduler -----------------------------------------------------------------
+variable "scheduler_tick" {
+  type        = string
+  description = "Cloud Scheduler cron for the deploy-schedule tick (UTC). Every 5 minutes: the UI tells users a one-off fires within about 5 minutes of its time, so do not slow this below that promise. Fires are at-most-once (rows are advanced before dispatch), so a faster tick is safe but pointless."
+  default     = "*/5 * * * *"
+}
+
+variable "scheduler_cpu" {
+  type        = string
+  default     = "1"
+  description = "vCPU for the scheduler job."
+}
+
+variable "scheduler_memory" {
+  type        = string
+  default     = "512Mi"
+  description = "Memory for the scheduler job."
+}

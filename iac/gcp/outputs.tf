@@ -75,6 +75,11 @@ output "wl_admin_database" {
   value       = google_sql_database.wl_admin.name
 }
 
+output "db_pre_deploy_bucket" {
+  description = "GCS bucket deploy-app.yml exports a per-database dump into before each deploy (the per-app rollback point; objects expire after 30 days)."
+  value       = google_storage_bucket.db_pre_deploy.name
+}
+
 output "labs_dns_zone" {
   description = "Cloud DNS managed-zone name for the delegated app subdomain. App deploys create <app>.<zone> records in it."
   value       = google_dns_managed_zone.labs.name

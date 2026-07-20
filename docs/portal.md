@@ -27,23 +27,34 @@ tenant-app rules in exactly three ways, and no others:
    registry tables below alongside it.
 2. **It holds one narrowly-scoped GitHub token** (`actions:write` on the platform repo,
    nothing else) to dispatch the platform deploy workflow.
-3. **It holds one read-only cloud capability: Cloud Logging read**, so app admins can see
-   their app's runtime logs on its card. This is the single exception to the
-   out-of-process rule below, because a live log tail cannot be a scheduled collector.
-   To keep the grant from cascading to every tenant app, the portal runs as its OWN
-   dedicated service account (not the shared app runtime SA) holding `logging.viewer`
-   and nothing else cloud-side; per-app scoping is enforced server-side (the same
-   app-admin authorization as cost/usage, plus a service-name filter), nothing is stored,
-   and log contents never enter the portal's own logs.
+3. **It holds a short list of narrowly scoped cloud grants under its OWN dedicated
+   service account** (not the shared app runtime SA - a grant on the shared SA would
+   cascade to every tenant app that inherits it; see `portal-gcp/identity.tf`):
+   - `logging.viewer` (project, read-only), so app admins can see their app's runtime
+     logs on its card. The live log tail is the single exception to the out-of-process
+     rule below, because it cannot be a scheduled collector. Per-app scoping is enforced
+     server-side (the same app-admin authorization as cost/usage, plus a service-name
+     filter), nothing is stored, and log contents never enter the portal's own logs.
+   - `storage.objectAdmin` on the pre-deploy dump bucket ONLY, so the Backups panel
+     (below) can list an app's dumps and platform admins can delete one. Bucket-scoped
+     deliberately: the portal holds no storage access beyond this single bucket.
+   - `cloudsql.viewer` (project, read-only), so the Backups panel can show the shared
+     instance's protection status (nightly backups, PITR). It carries no import, export,
+     or data capability.
 
-That is the whole blast radius: one GitHub token, one database, one read-only log grant.
-The portal holds no other cloud credentials - it cannot touch Cloud Run, IAM, billing, or
-state. Every other cloud-facing action happens either in the deploy workflow (under the
+That is the whole blast radius: one GitHub token, one database, and the three scoped
+grants above. The portal holds no other cloud credentials - it cannot run a Cloud SQL
+import or export, cannot write to any app's database, holds no storage access outside
+the one pre-deploy bucket, and cannot touch Cloud Run, IAM, billing, or state. Every
+other cloud-facing action happens either in the deploy and restore workflows (under the
 platform's federated CI identity) or in out-of-process collector jobs (under their own
 scoped service account, see below). If the portal is fully compromised, the attacker can
-dispatch deploys of repos an admin must still have vetted, read/write the registry, and
-read runtime logs (which the platform's logging rule already requires to be free of user
-data) - and that is all.
+dispatch deploys of repos an admin must still have vetted, dispatch restores of dumps
+that already exist (the workflow safety-exports the current state first), read/write the
+registry, read runtime logs (which the platform's logging rule already requires to be
+free of user data), read Cloud SQL instance settings, and list or delete pre-deploy
+dumps (bounded harm: dumps are 30-day rollback insurance, and nightly instance backups
+plus PITR still stand behind them) - and that is all.
 
 In every other respect the portal follows the tenant rules: Cloud Run behind the shared
 IAP load balancer, scale to zero, internal ingress, identity from the IAP JWT
@@ -161,6 +172,10 @@ anything the client asserts. "App Admin" below means for that specific app.
 | Manage platform admins | no | no | yes (never delete the last row) |
 | View an app's cost and usage | no | yes (own app) | yes |
 | View portfolio cost and usage | no | no | yes |
+| View an app's backups (dumps + instance protection) | no | yes (own app) | yes |
+| Restore a backup (dispatch restore-app-db.yml) | no | no | yes |
+| Delete a backup object | no | no | yes |
+| Deploy a pinned sha (any previous successful deploy) | no | no | yes |
 
 Every mutating action in this table writes an `audit_events` row (schema below).
 
@@ -312,6 +327,112 @@ Authorization: Bearer <fine-grained PAT, actions:write on the platform repo only
   module present) and routes them through `env:` rather than `${{ }}` interpolation, so
   a crafted card field is data, never shell. The portal still sanity-checks
   (slug shape, hostname within the platform subdomain) for UX, not for security.
+
+## Backups
+
+Every deploy already leaves a rollback point behind: `deploy-app.yml` exports the app's
+own database to the landing zone's pre-deploy bucket between the image push and the
+applies ([deploy-app-workflow.md](deploy-app-workflow.md), "The pre-migration database
+export"), and the shared instance carries nightly backups plus 7-day PITR
+([`iac/gcp/database.tf`](../iac/gcp/database.tf)). The Backups panel puts that material
+on the app card. For owners and app admins it is read-only reassurance: their app's
+dumps exist and the instance is protected. Platform admins additionally get three
+actions: restore a dump, delete a dump, and deploy a pinned sha. The authorization rows
+are in the table above - `view_backups` for owner / app admin / platform admin;
+`restore_backup`, `delete_backup`, and `deploy_pinned` for platform admins only.
+Restores and deletes are destructive and a pinned deploy bypasses "head of the card's
+ref", so all three sit at the same tier as archive.
+
+**The pairing contract.** Every export object is stamped at export time with
+`deployed_sha`, `deployed_ref`, `github_run_id`, and `app_slug`. The panel joins dumps
+to the `deployments` table on `github_run_id` and renders each one two ways:
+
+- **"taken before deploy #n"** - the deploy whose run exported it. The dump is taken
+  before that run's revision boots, so before its migrations run.
+- **"matching code: deploy #n-1"** - the latest earlier successful deployment, the code
+  whose schema the dump actually matches.
+
+That distinction is what makes restores safe to reason about. Under the platform's
+expand/contract migration discipline
+([shared-db-rls.md](../skills/onboard-app/references/shared-db-rls.md)) schema changes
+are additive, so restoring a dump under the CURRENT code - a data-only restore - is the
+common case and just works. A full rollback (bad migration, bad code and bad data
+together) pairs the restore with redeploying the matching sha, which is exactly what the
+previous-heads picker below exists for.
+
+**The restore contract.** Platform-admin only, behind a typed confirmation (retype the
+app slug - a restore overwrites live data, so a stray click must never be enough). The
+portal writes a `deployments` row with `kind = 'restore'` (`ref` carries the backup
+object name, so the deploy history reads honestly) and dispatches
+[`restore-app-db.yml`](../.github/workflows/restore-app-db.yml) - the same trust shape
+as deploy and update dispatch: `workflow_dispatch` under the portal's one
+`actions:write` token, the run located by its `run-name` prefix (`restore <slug> `),
+status polled into the row. The workflow guarantees safety-export, then import, then
+revision nudge: it first exports the current database to the same bucket (so even a
+mistaken restore is itself restorable), imports the chosen dump, and rolls the app's
+Cloud Run revision so no instance keeps serving from stale connections or caches.
+
+Explicitly rejected: the portal executing restores itself. It already reads the bucket,
+and `gcloud sql import` is one API call away - but that call needs a destructive Cloud
+SQL role, and granting it would break the blast-radius statement above for one
+convenience. Imports stay under the CI identity via workflow dispatch: the portal
+requests, CI executes, and a fully compromised portal still cannot import anything into
+any database.
+
+**Deploy a pinned sha.** Default deploy behaviour is unchanged: the Deploy button ships
+the head of the card's ref. Platform admins additionally get a previous-heads picker -
+any sha this app has previously deployed successfully (from `deployments`) - passed to
+`deploy-app.yml`, which accepts an exact sha as `ref`. This is the redeploy half of a
+full rollback, and it anticipates the pinned release/tag posture of
+[app-archetypes.md](app-archetypes.md) section 6: today the picker is recovery,
+tomorrow the same mechanism deploys tags deliberately.
+
+**Delete.** Platform-admin only, a direct GCS delete under the portal SA's
+bucket-scoped grant, audited (`audit_events` action `backup.delete`). The bucket's
+30-day lifecycle rule remains the primary deleter; manual delete is hygiene (a corrupt
+dump, an archived app's leftovers), not retention management - nobody should be
+curating this bucket by hand.
+
+## Time and timezones
+
+One convention everywhere, ratified after a real incident (a user picked 10:00 in the
+one-off schedule picker; the server read the zoneless wall-clock as UTC and the deploy
+fired at 11:00 their time): **UTC at rest, local at the glass, explicit zone at every
+boundary, recurring rules pinned to a named zone.**
+
+**Store and compute in UTC, always.** Postgres `timestamptz`, the scheduler's fire
+computation, dump stamps, audit rows: all UTC. Storage and code get exactly one clock to
+reason about, and two instants compare without a conversion table. This was already true
+and is now the rule, not a habit.
+
+**Capture in the user's zone; convert at the edge.** `<input type="datetime-local">`
+presents local wall-clock and posts a zoneless string - precisely the ambiguity behind
+the incident. So the picker is labelled with the browser's resolved zone, client JS
+converts the picked wall-clock to a UTC ISO-8601 instant before submit, and the form
+echoes both readings ("fires at 09:00 UTC, 10:00 your time"). The server accepts ONLY
+Z-suffixed instants for `run_at`: a JS-off submit fails with a clear error instead of
+silently firing an hour off. Explicitly rejected: guessing the zone server-side (from
+IP, Accept-Language, or a stored preference) - a guess that is right most of the time is
+exactly how the wrong-hour class of bug survives review.
+
+**Display in the viewer's zone, zone visible.** Every human-facing timestamp renders as
+`<time datetime="<ISO-8601-UTC>">...UTC-labelled fallback...</time>` (`timeEl` in
+views.js), and ONE small shared progressive-enhancement script (`public/time.js`, loaded
+by the layout) rewrites them all to local time with a short zone suffix, keeping the UTC
+string on `title` for hover. No framework: the portal stays plain server-rendered HTML,
+and without JS the fallback stands - which is why every fallback must spell out "UTC".
+
+**Recurring crons are evaluated in UTC and say so.** The field is labelled "Cron (UTC)"
+and each active recurring schedule previews its next few computed fires (via cron.js's
+existing `nextFire`) through the same `<time>` mechanism, so the user sees in their own
+zone what "0 2 * * 1" actually means. A per-schedule timezone column is deliberately NOT
+added now: it drags DST arithmetic into the dependency-free cron parser for a need no
+current user has. It is the future extension for when a multi-timezone team needs it.
+
+**Machine surfaces stay UTC.** Dump object names, workflow run names and summaries,
+audit rows, structured logs: these exist for correlation and copy-paste, not reading,
+and localizing them would break grep across systems. They keep their raw UTC form
+untouched.
 
 ## Self-deploying
 

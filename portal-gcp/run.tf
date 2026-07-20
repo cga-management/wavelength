@@ -95,6 +95,17 @@ resource "google_cloud_run_v2_service" "portal" {
         name  = "GCP_ENVIRONMENT"
         value = var.environment
       }
+      # Backups panel: the bucket deploy-app.yml exports pre-deploy dumps into (the panel
+      # lists it; platform admins delete from it), and the shared Cloud SQL instance name
+      # for the read-only protection-status lookup via cloudsql.viewer (identity.tf).
+      env {
+        name  = "DB_PRE_DEPLOY_BUCKET"
+        value = local.lz.db_pre_deploy_bucket
+      }
+      env {
+        name  = "SQL_INSTANCE_NAME"
+        value = local.lz.db_instance_name
+      }
       env {
         name  = "PORTAL_HOSTNAME"
         value = var.portal_hostname

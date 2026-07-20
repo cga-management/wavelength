@@ -232,3 +232,18 @@ ul.admins li small { color: var(--muted); }
 /* Default brand mark (inline SVG, follows the theme via currentColor) */
 .brand-icon.svgmark { display: inline-grid; place-items: center; border-radius: 0; }
 .brand-icon.svgmark svg { width: 22px; height: 22px; display: block; }
+
+/* Deploy schedules panel */
+.schedules td { vertical-align: top; }
+.schedules small { color: var(--muted); font-weight: 400; }
+.sched-status { font-size: .74rem; padding: 2px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: .04em; }
+.sched-status.active { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.sched-status.completed { background: color-mix(in srgb, var(--muted) 20%, transparent); color: var(--muted); }
+.sched-status.disabled { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+.sched-new { margin-top: 12px; }
+.sched-new summary { cursor: pointer; font-size: .9rem; font-weight: 600; color: var(--accent); }
+.sched-new form.form { margin-top: 10px; }
+
+/* Platform-app updates */
+.badge.update { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.updates .inline input { max-width: 120px; }

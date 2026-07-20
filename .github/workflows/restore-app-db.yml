@@ -1,0 +1,234 @@
+# Restore one app's database from a pre-deploy export.
+#
+# deploy-app.yml dumps the app's database to the landing zone's pre-deploy bucket
+# before every apply (see docs/deploy-app-workflow.md). This workflow is the way back:
+# the portal lists those dumps (pairing each with its deploy via the github_run_id
+# metadata stamped on the object) and a platform admin dispatches THIS workflow to
+# restore one. Manual workflow_dispatch from the Actions tab is the fallback surface.
+#
+# Guarantees:
+#   1. The object path is anchored to the slug - a dump belonging to another app is
+#      rejected before any GCP call is made.
+#   2. A safety export of the CURRENT database is taken to pre-restore/<slug>/ in the
+#      same bucket BEFORE the import, and the run fails closed if that export fails -
+#      a restore never runs without a way back.
+#   3. After a successful import the app's Cloud Run service is rolled to a fresh
+#      revision (label bump) so boot-time migrations re-run against the restored data
+#      and stale connections drop. A missing service is a loud warning, not a failure,
+#      because the data restore has already succeeded by then.
+
+name: restore-app-db
+# The portal locates this run by its name prefix "restore <slug> " (github.js
+# locateRun) - the format below is a load-bearing contract, do not reword it.
+run-name: "restore ${{ inputs.app_slug }} (${{ inputs.backup_object }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_slug:
+        description: "App whose database to restore (the slug it deploys under)"
+        required: true
+      backup_object:
+        description: "Backup object path relative to the bucket, e.g. pre-deploy/myapp/abc123-20260717T080000Z.sql.gz"
+        required: true
+      requested_by:
+        description: "Who asked for this restore (for the summary)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write   # required for Workload Identity Federation
+
+# One restore per app at a time, queued not cancelled: a cancelled half-restore could
+# leave the database imported but the service never rolled, or interleave two imports.
+concurrency:
+  group: restore-${{ inputs.app_slug }}
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    # Dispatch inputs are routed through env vars rather than interpolated into run:
+    # scripts with ${{ }} so a crafted input value is data, never shell (same hardening
+    # as deploy-app.yml - these fields arrive from the portal).
+    env:
+      REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
+      WORKLOAD: ${{ vars.GCP_WORKLOAD || 'wl' }}
+      ENVIRONMENT: ${{ vars.GCP_ENVIRONMENT || 'platform' }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      APP_SLUG: ${{ inputs.app_slug }}
+      BACKUP_OBJECT: ${{ inputs.backup_object }}
+      REQUESTED_BY: ${{ inputs.requested_by }}
+    steps:
+      - name: Validate inputs
+        # Everything downstream (bucket paths, db name, service name) derives from these
+        # two inputs, so both are pinned to a closed charset before any of it is built.
+        # The object path is anchored to THIS run's slug: restoring app A from app B's
+        # dump must be impossible no matter what the dispatch carries.
+        run: |
+          set -euo pipefail
+          # Same slug rule the portal enforces at registration and the onboard-app
+          # skill documents: lowercase letters, digits, hyphens; starts alphanumeric.
+          if ! [[ "${APP_SLUG}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "::error::app_slug '${APP_SLUG}' is invalid - lowercase letters, digits and hyphens only, starting with a letter or digit."
+            exit 1
+          fi
+          case "${BACKUP_OBJECT}" in
+            *..*|/*|*\\*)
+              echo "::error::backup_object '${BACKUP_OBJECT}' is invalid - it must be a bucket-relative path with no '..', no leading '/', and no backslashes."
+              exit 1
+              ;;
+          esac
+          # The slug was validated above to [a-z0-9-], all regex-literal characters,
+          # so interpolating it here anchors the pattern to exactly this app's prefix.
+          # The filename class has no '/', so no extra path segments can hide in it.
+          if ! [[ "${BACKUP_OBJECT}" =~ ^pre-deploy/${APP_SLUG}/[A-Za-z0-9._-]+\.sql\.gz$ ]]; then
+            echo "::error::backup_object '${BACKUP_OBJECT}' is invalid - expected pre-deploy/${APP_SLUG}/<file>.sql.gz, a pre-deploy dump belonging to '${APP_SLUG}'."
+            exit 1
+          fi
+
+      - name: Preflight - platform repo configuration
+        # Repo variables live outside git and CAN go missing (recreated repo, org
+        # migration, accidental deletion). Fail first and name the fix instead of dying
+        # inside the auth action with a generic credentials error.
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${PROJECT_ID}" ]      || missing="${missing} GCP_PROJECT_ID"
+          [ -n "${WIF_PROVIDER}" ]    || missing="${missing} GCP_WIF_PROVIDER"
+          [ -n "${SERVICE_ACCOUNT}" ] || missing="${missing} GCP_SERVICE_ACCOUNT"
+          if [ -n "${missing}" ]; then
+            echo "::error::missing repo variable(s):${missing}. bootstrap.sh prints all of them - re-set them on this repo."
+            exit 1
+          fi
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve the shared instance and the export bucket
+        # Same resolution as deploy-app.yml's export step: exactly one shared Cloud SQL
+        # instance, and the bucket name recomputed from the landing zone's token
+        # derivation (sha1 of "<project_id>-<workload>", first 8 chars) so no storage
+        # list permission is needed.
+        run: |
+          set -euo pipefail
+          # App db name = slug with hyphens mapped to underscores (the onboard-app
+          # app-stack convention: Postgres identifiers use underscores).
+          DB_NAME="${APP_SLUG//-/_}"
+
+          INSTANCE="$(gcloud sql instances list --project "${PROJECT_ID}" \
+            --filter "name~^psql-${WORKLOAD}-shared" --format 'value(name)')"
+          if [ -z "${INSTANCE}" ] || [ "$(wc -l <<<"${INSTANCE}")" -ne 1 ]; then
+            echo "::error::expected exactly one psql-${WORKLOAD}-shared-* instance in ${PROJECT_ID}, found: '${INSTANCE}'"
+            exit 1
+          fi
+
+          TOKEN="$(printf '%s' "${PROJECT_ID}-${WORKLOAD}" | sha1sum | cut -c1-8)"
+          BUCKET="${WORKLOAD}-db-pre-deploy-${TOKEN}"
+
+          {
+            echo "DB_NAME=${DB_NAME}"
+            echo "INSTANCE=${INSTANCE}"
+            echo "BUCKET=${BUCKET}"
+          } >> "$GITHUB_ENV"
+
+      - name: Verify the backup object exists
+        run: |
+          set -euo pipefail
+          if ! gcloud storage objects describe "gs://${BUCKET}/${BACKUP_OBJECT}" >/dev/null 2>&1; then
+            echo "::error::backup object gs://${BUCKET}/${BACKUP_OBJECT} does not exist. Pre-deploy dumps expire after 30 days - list gs://${BUCKET}/pre-deploy/${APP_SLUG}/ for what is still available."
+            exit 1
+          fi
+
+      - name: Verify the target database exists
+        # The app stack self-provisions its database on first deploy; restoring into an
+        # app that has never been deployed is an error, not something to create here.
+        run: |
+          set -euo pipefail
+          if ! gcloud sql databases list --instance "${INSTANCE}" --project "${PROJECT_ID}" \
+              --format 'value(name)' | grep -Fxq "${DB_NAME}"; then
+            echo "::error::database ${DB_NAME} does not exist on ${INSTANCE} - '${APP_SLUG}' has never been deployed, so there is nothing to restore into. Deploy the app first."
+            exit 1
+          fi
+
+      - name: Safety export - dump the current database first
+        # Never restore without a way back: the state about to be overwritten is dumped
+        # to pre-restore/<slug>/ in the same bucket, and a failed export fails the run
+        # before the import can touch anything. Stamped so the portal can tell these
+        # apart from pre-deploy dumps and trace what each one preceded.
+        run: |
+          set -euo pipefail
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          SAFETY_OBJECT="gs://${BUCKET}/pre-restore/${APP_SLUG}/${STAMP}-before-restore.sql.gz"
+          echo "Exporting current ${DB_NAME} to ${SAFETY_OBJECT}"
+          gcloud sql export sql "${INSTANCE}" "${SAFETY_OBJECT}" \
+            --database "${DB_NAME}" --project "${PROJECT_ID}"
+          # Post-stamp, same as deploy-app.yml: gcloud sql export cannot set object
+          # metadata at write time. An unstamped safety dump is still a valid rollback
+          # point, but the metadata is part of this workflow's contract - fail closed.
+          gcloud storage objects update "${SAFETY_OBJECT}" --custom-metadata \
+            "reason=pre-restore,restored_from=${BACKUP_OBJECT},github_run_id=${GITHUB_RUN_ID}"
+          {
+            echo "SAFETY_OBJECT=${SAFETY_OBJECT}"
+            echo "RESTORE_STAMP=${STAMP}"
+          } >> "$GITHUB_ENV"
+
+      - name: Import the backup
+        # Blocks until the import completes and exits nonzero on error. The object read
+        # is performed by the Cloud SQL instance's own service account, which the
+        # landing zone grants roles/storage.objectAdmin on the bucket. The dump is
+        # plain SQL: it does not drop what it did not create, so if the import collides
+        # with objects created after the dump was taken, drop those first and re-run.
+        run: |
+          set -euo pipefail
+          echo "Importing gs://${BUCKET}/${BACKUP_OBJECT} into ${DB_NAME} on ${INSTANCE}"
+          gcloud sql import sql "${INSTANCE}" "gs://${BUCKET}/${BACKUP_OBJECT}" \
+            --database "${DB_NAME}" --project "${PROJECT_ID}" --quiet
+
+      - name: Roll the app to a fresh revision
+        # A label bump forces a new revision so the app's boot migrations re-run
+        # against the restored data and lingering connections with stale state drop.
+        # Service name per the app-stack convention (run.tf):
+        # <workload>-<slug>-<environment>. If the service does not exist the restore
+        # itself has still succeeded, so warn loudly instead of failing the run.
+        run: |
+          set -euo pipefail
+          SERVICE="${WORKLOAD}-${APP_SLUG}-${ENVIRONMENT}"
+          echo "SERVICE=${SERVICE}" >> "$GITHUB_ENV"
+          if ! gcloud run services describe "${SERVICE}" \
+              --region "${REGION}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::warning::Cloud Run service ${SERVICE} not found - the database restore SUCCEEDED, but no revision was rolled. Migrations will only re-run when the app is next deployed."
+            echo "SERVICE_NUDGED=no" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # Label values must be lowercase in GCP, hence the ,, on the UTC stamp.
+          if gcloud run services update "${SERVICE}" \
+              --region "${REGION}" --project "${PROJECT_ID}" \
+              --update-labels "wl-restore=${RESTORE_STAMP,,}"; then
+            echo "SERVICE_NUDGED=yes" >> "$GITHUB_ENV"
+          else
+            echo "::warning::could not roll ${SERVICE} to a fresh revision - the database restore SUCCEEDED, but the running revision may hold stale connections. Roll the service manually (any label change) or redeploy the app."
+            echo "SERVICE_NUDGED=no" >> "$GITHUB_ENV"
+          fi
+
+      - name: Summary
+        run: |
+          set -euo pipefail
+          {
+            echo "### Restored ${APP_SLUG}"
+            echo "- restored from: gs://${BUCKET}/${BACKUP_OBJECT}"
+            echo "- safety dump (state before this restore): ${SAFETY_OBJECT}"
+            echo "- database: ${DB_NAME} on ${INSTANCE}"
+            echo "- service ${SERVICE} rolled to a fresh revision: ${SERVICE_NUDGED}"
+            echo "- requested by: ${REQUESTED_BY:-manual dispatch}"
+          } >> "$GITHUB_STEP_SUMMARY"
