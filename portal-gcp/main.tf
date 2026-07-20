@@ -3,8 +3,9 @@
 # onboard-app skill. It deviates from the tenant-app rules in exactly three ways: it uses
 # the shared wl_admin database directly (wl_admin IS the registry it manages), it holds
 # one narrowly-scoped GitHub token (actions:write on the platform repo) to dispatch
-# deploys, and it holds one read-only Cloud Logging grant under its OWN dedicated SA
-# (per-app log panels; see identity.tf). Every other cloud-facing action happens in the
+# deploys, and it holds a small set of narrowly scoped cloud grants under its OWN
+# dedicated SA (per-app log panels, the Backups panel; see identity.tf). Every other
+# cloud-facing action happens in the
 # deploy workflow (federated CI identity) or in the out-of-process collector jobs (their
 # own scoped SA, see collector.tf).
 #

@@ -2,6 +2,8 @@
 // behind IAP (template issue #21 documents the SPA-behind-IAP session-expiry pain). One
 // small shared stylesheet (public/style.css). Everything user-controlled is escaped.
 
+import { describeCron, nextFire } from "./cron.js";
+
 export function esc(s) {
   if (s === null || s === undefined) return "";
   return String(s)
@@ -90,6 +92,7 @@ ${faviconLink(b.icon)}
 })();
 </script>
 <link rel="stylesheet" href="/style.css">
+<script src="/time.js" defer></script>
 </head>
 <body>
 <header class="topbar">
@@ -127,8 +130,13 @@ export function grid(apps, ctx) {
       const primaryHref = openable ? `https://${esc(app.hostname)}` : `/app/${app.id}`;
       const details = openable ? `<a class="details" href="/app/${app.id}">Details &rarr;</a>` : "";
       const docs = safeDocsUrl(app.docs_url) ? `<a class="docs" href="${esc(app.docs_url)}" target="_blank" rel="noopener">Docs</a>` : "";
+      // Platform-updatable card with a newer upstream release than the portal last
+      // rolled: a small nudge (the version number is public upstream data).
+      const updateBadge = app.upstream_repo && app.available_version && app.current_version
+        && app.available_version !== app.current_version
+        ? ` <span class="badge update">update available</span>` : "";
       return `<article class="card ${esc(app.status)}">
-        <div class="card-head">${icon(app)}<h2><a class="card-title" href="${primaryHref}">${esc(app.name)}</a> ${statusBadge(app)}</h2></div>
+        <div class="card-head">${icon(app)}<h2><a class="card-title" href="${primaryHref}">${esc(app.name)}</a> ${statusBadge(app)}${updateBadge}</h2></div>
         <p class="desc">${esc(app.description || "")}</p>
         <div class="card-foot"><span class="slug">${esc(app.slug)}</span>${docs}${details}</div>
       </article>`;
@@ -207,8 +215,22 @@ function shortTs(ts) {
   if (!ts) return "-";
   const d = new Date(ts);
   if (isNaN(d.getTime())) return String(ts);
-  // "YYYY-MM-DD HH:MM:SS" UTC, milliseconds dropped.
-  return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
+  // "YYYY-MM-DD HH:MM:SS UTC", milliseconds dropped. The zone is spelled out because
+  // this string must stand alone (the no-JS fallback, <option> text).
+  return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+}
+
+// Every human-facing timestamp renders through this: a <time> element carrying the exact
+// UTC instant, fallback text explicitly labelled UTC. public/time.js (loaded by the
+// layout) rewrites these to the viewer's local zone with a short zone suffix, keeping
+// the UTC string on title; without JS the UTC fallback stands. Machine surfaces (dump
+// object names, audit rows, logs' own content) deliberately do NOT use this - they stay
+// raw UTC (docs/portal.md, "Time and timezones").
+function timeEl(ts) {
+  if (!ts) return "-";
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) return esc(String(ts));
+  return `<time datetime="${d.toISOString()}">${shortTs(d)}</time>`;
 }
 
 function logSeverityBadge(sev) {
@@ -244,13 +266,13 @@ export function logsPanel({ service, result, severity, selfBase }) {
   } else {
     const rows = result.entries
       .map((e) => `<tr>
-        <td class="log-ts">${esc(shortTs(e.timestamp))}</td>
+        <td class="log-ts">${timeEl(e.timestamp)}</td>
         <td>${logSeverityBadge(e.severity)}</td>
         <td class="log-msg">${esc(e.message)}</td>
       </tr>`)
       .join("");
     body = `<div class="logs-scroll"><table class="logs-table">
-      <thead><tr><th>Time (UTC)</th><th>Severity</th><th>Message</th></tr></thead>
+      <thead><tr><th>Time</th><th>Severity</th><th>Message</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
@@ -272,14 +294,272 @@ export function logsPage({ app, service, result, severity, selfBase }) {
 
 function deploymentRow(d) {
   return `<tr class="dep ${esc(d.status)}">
-    <td>${esc(d.created_at instanceof Date ? d.created_at.toISOString() : d.created_at)}</td>
+    <td>${timeEl(d.created_at)}</td>
+    <td>${d.kind === "platform_update" ? "update" : d.kind === "restore" ? "restore" : "deploy"}</td>
     <td>${esc(d.ref)}</td>
     <td>${esc(d.sha ? String(d.sha).slice(0, 7) : "-")}</td>
     <td><span class="dep-status ${esc(d.status)}">${esc(d.status)}</span></td>
   </tr>`;
 }
 
-export function cardDetail({ app, perms, admins, deployments, cost, usage, deployEnabled, deployNote, logsView }) {
+// --- Backups panel (portal-managed backups) -----------------------------------
+// Read-only reassurance for the app's owner and admins: the instance-protection line
+// (nightly backups + PITR, live from the Cloud SQL Admin API) and the app's dumps with
+// their deploy pairing. Platform admins additionally get the per-dump restore/delete
+// actions (typed confirmation: the admin types the app slug, re-checked server-side)
+// and the pinned-deploy picker. Sizes human-readable, times via timeEl (UTC at rest,
+// local at the glass), heads 7 chars. Dump OBJECT NAMES keep their embedded UTC stamp
+// untouched - they are copy-paste machine surfaces, not display timestamps.
+
+function humanSize(n) {
+  const v0 = Number(n);
+  if (n === null || n === undefined || isNaN(v0)) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = v0;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${i === 0 ? v : v.toFixed(1)} ${units[i]}`;
+}
+
+// "taken before deploy #n (sha)" + "matching code: deploy #n-1 (sha)". `estimated`
+// marks the timestamp fallback for dumps that predate the metadata stamp.
+function backupPairing(d) {
+  const approx = d.estimated ? ` <small>(by timestamp)</small>` : "";
+  const taken = !d.taken
+    ? `<span class="nodata">pairing unknown</span>`
+    : d.taken.kind === "deploy"
+      ? `taken before deploy #${d.taken.n} (${esc(d.taken.head)})${approx}`
+      : `taken before a restore${approx}`;
+  const matching = d.matching
+    ? `matching code: deploy #${d.matching.n} (${esc(d.matching.head)})`
+    : `matching code: no earlier successful deploy`;
+  return `${taken}<br><small>${matching}</small>`;
+}
+
+// Per-dump admin actions: restore and delete each in their OWN form with their own
+// typed-confirmation field (never one form with two submit buttons - the Enter key
+// must not be able to fire the wrong destructive action).
+function backupActions(app, d, { tokenOk, activeDep }) {
+  const confirmField = `<input name="confirm" required pattern="${esc(app.slug)}" placeholder="type ${esc(app.slug)}" title="type the app slug to confirm">`;
+  const restore = app.status === "archived"
+    ? `<p class="note">restore the app first</p>`
+    : !tokenOk
+      ? `<p class="note">dispatch token not configured</p>`
+      : activeDep
+        ? `<p class="note">a run is in progress</p>`
+        : `<form method="post" action="/app/${app.id}/backups/restore" class="inline">
+            <input type="hidden" name="object" value="${esc(d.object)}">
+            ${confirmField}
+            <button class="btn" type="submit">Restore</button>
+          </form>`;
+  const del = `<form method="post" action="/app/${app.id}/backups/delete" class="inline">
+      <input type="hidden" name="object" value="${esc(d.object)}">
+      ${confirmField}
+      <button class="btn danger" type="submit">Delete</button>
+    </form>`;
+  return `<details class="backup-actions"><summary>actions</summary>${restore}${del}</details>`;
+}
+
+function backupRow(app, d, { canAct, tokenOk, activeDep }) {
+  const label = d.preRestore ? `<br><span class="badge pending">pre-restore safety dump</span>` : "";
+  return `<tr>
+    <td title="${esc(d.object)}">${esc(d.base)}${label}</td>
+    <td>${timeEl(d.timeCreated)}</td>
+    <td>${esc(humanSize(d.size))}</td>
+    <td>${backupPairing(d)}</td>
+    ${canAct ? `<td>${backupActions(app, d, { tokenOk, activeDep })}</td>` : ""}
+  </tr>`;
+}
+
+// "Deploy a previous head": redeploy any sha this app already deployed successfully,
+// via the ordinary deploy workflow with ref = the exact sha. Platform admins only.
+function pinnedDeployPicker(app, pinned, { tokenOk, activeDep }) {
+  if (!app.repo || app.status === "archived") return "";
+  if (!pinned || pinned.length === 0) return "";
+  if (!tokenOk) return `<p class="note">Dispatch token not configured; pinned deploys are unavailable.</p>`;
+  if (activeDep) return `<p class="note">A run is in progress (${esc(activeDep.status)}); the pinned-deploy picker returns when it finishes.</p>`;
+  const opts = pinned
+    .map((p) => `<option value="${esc(p.sha)}">${esc(String(p.sha).slice(0, 7))} - ${esc(String(p.ref || "?").slice(0, 7))} - ${esc(shortTs(p.created_at))}</option>`)
+    .join("");
+  return `<form method="post" action="/app/${app.id}/backups/deploy-pinned" class="inline pinned-deploy">
+    <label>Deploy a previous head
+      <select name="sha" required>
+        <option value="">pick a successful deploy...</option>
+        ${opts}
+      </select>
+    </label>
+    <button class="btn" type="submit">Deploy this head</button>
+  </form>
+  <p class="note">Redeploys the exact commit of a previous successful deploy. Pair it with the matching dump above to roll code and data back together.</p>`;
+}
+
+export function backupsPanel({ app, view, perms, tokenOk, activeDep }) {
+  if (!view) return "";
+  if (!view.configured) {
+    return `<section class="panel backups"><h3>Backups</h3><p class="nodata">Backups are not configured on this instance.</p></section>`;
+  }
+  const prot = view.protection || {};
+  const onOff = (b) => (b ? "on" : "OFF");
+  const protLine = prot.error
+    ? `<p class="nodata">Instance protection: ${esc(prot.error)}</p>`
+    : `<p class="protection">Instance protection: nightly backups <strong>${onOff(prot.backupsEnabled)}</strong>, point-in-time recovery <strong>${onOff(prot.pitrEnabled)}</strong> <small>(live from the Cloud SQL Admin API)</small></p>`;
+  const canAct = perms.canRestoreBackup() || perms.canDeleteBackup();
+  let table;
+  if (view.listError) {
+    table = `<p class="nodata">${esc(view.listError)}</p>`;
+  } else if (!view.dumps || view.dumps.length === 0) {
+    table = `<p class="nodata">No dumps yet. A dump is written to the pre-deploy bucket before every deploy.</p>`;
+  } else {
+    const rows = view.dumps.map((d) => backupRow(app, d, { canAct, tokenOk, activeDep })).join("");
+    table = `<table class="backups-table">
+      <thead><tr><th>Dump</th><th>Taken</th><th>Size</th><th>Deploy pairing</th>${canAct ? "<th></th>" : ""}</tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+  const picker = perms.canDeployPinned() ? pinnedDeployPicker(app, view.pinned, { tokenOk, activeDep }) : "";
+  return `<section class="panel backups">
+    <h3>Backups</h3>
+    ${protLine}
+    ${table}
+    ${picker}
+  </section>`;
+}
+
+// --- Deploy schedules panel ---------------------------------------------------
+// One-off and recurring schedules for this app. The human reading of a cron is ALWAYS
+// derived from the stored string (describeCron) - never a second hand-maintained copy.
+
+// Next few fire instants of a stored cron (UTC, via cron.js's nextFire), so the row can
+// preview them through timeEl and the viewer sees them in their own zone. An
+// unparseable stored cron renders without a preview rather than erroring the page.
+function upcomingFires(cron, n = 3) {
+  const out = [];
+  try {
+    let from = new Date();
+    for (let i = 0; i < n; i++) {
+      from = nextFire(cron, from);
+      out.push(from);
+    }
+  } catch {
+    // fall through: no preview
+  }
+  return out;
+}
+
+function scheduleRow(app, s, perms, email) {
+  const fires = s.cadence === "recurring" && s.status === "active" ? upcomingFires(s.cron) : [];
+  const preview = fires.length
+    ? `<br><small>next: ${fires.map((f) => timeEl(f)).join(", ")}</small>`
+    : "";
+  const when = s.cadence === "once"
+    ? `once at ${timeEl(s.run_at)}`
+    : `<code>${esc(s.cron)}</code> <small>${esc(describeCron(s.cron))}</small>${preview}`;
+  const what = s.kind === "platform_update"
+    ? `update to ${esc((s.payload && s.payload.image_tag) || "?")}`
+    : "deploy";
+  const next = s.status === "active" ? timeEl(s.next_fire_at) : "-";
+  const last = s.last_fired_at
+    ? `${timeEl(s.last_fired_at)}${s.last_result ? ` <small>${esc(s.last_result)}</small>` : ""}`
+    : "-";
+  const status = `<span class="sched-status ${esc(s.status)}">${esc(s.status)}</span>${s.disabled_reason ? `<br><small>${esc(s.disabled_reason)}</small>` : ""}`;
+  const cancel = s.status === "active" && (perms.platformAdmin || s.created_by === email)
+    ? `<form method="post" action="/app/${app.id}/schedule/${s.id}/cancel" class="inline"><button class="linkbtn">cancel</button></form>`
+    : "";
+  return `<tr>
+    <td>${what}<br><small>${esc(s.created_by)}</small></td>
+    <td>${when}</td>
+    <td>${next}</td>
+    <td>${last}</td>
+    <td>${status}</td>
+    <td>${cancel}</td>
+  </tr>`;
+}
+
+function scheduleForm(app, action, { availableVersion } = {}) {
+  const isUpdate = action === "update";
+  const tagField = isUpdate
+    ? `<label>Image tag <input name="image_tag" required pattern="v?\\d+\\.\\d+\\.\\d+" value="${esc(availableVersion || "")}" placeholder="1.2.3"></label>`
+    : "";
+  return `<details class="sched-new">
+    <summary>${isUpdate ? "Schedule an update" : "Schedule a deploy"}</summary>
+    <form method="post" action="/app/${app.id}/schedule" class="form sched-form">
+      <input type="hidden" name="action" value="${esc(action)}">
+      ${tagField}
+      <label>Cadence
+        <select name="cadence">
+          <option value="once">One-off</option>
+          <option value="recurring">Recurring (cron)</option>
+        </select>
+      </label>
+      <label>Run at <input type="datetime-local" name="run_at_local" data-utc-field="run_at"><small>one-off only. Times shown in <span data-tz-name>your local zone (a one-off needs JavaScript to submit)</span>.</small></label>
+      <input type="hidden" name="run_at" value="">
+      <p class="note" data-utc-echo hidden></p>
+      <label>Cron (UTC) <input name="cron" placeholder="0 2 * * 1"><small>recurring only: minute hour day month weekday, evaluated in UTC. "0 2 * * 1" = Mondays 02:00 UTC. Minimum interval 15 minutes.</small></label>
+      <button class="btn" type="submit">${isUpdate ? "Schedule update" : "Schedule deploy"}</button>
+    </form>
+  </details>`;
+}
+
+// --- Platform-app updates panel (platform admins, apps with upstream_repo) ----
+// Detect + approve: the scheduler surfaces the latest upstream release here; a human
+// triggers the image-only update now or schedules it. current_version is what the
+// PORTAL last rolled - the committed tfvars in the platform repo stays the record.
+
+function updatePanel({ app, activeDep, tokenOk }) {
+  const cur = app.current_version;
+  const avail = app.available_version;
+  const updateAvailable = !!(avail && cur && avail !== cur);
+  const checked = app.version_checked_at ? `checked ${ago(app.version_checked_at)}` : "not checked yet";
+
+  let form;
+  if (!tokenOk) {
+    form = `<p class="note">Dispatch token not configured; updates are unavailable.</p>`;
+  } else if (activeDep) {
+    form = `<button class="btn" disabled>Update now</button>
+            <p class="note">A run is in progress (${esc(activeDep.status)}); wait for it to finish.</p>`;
+  } else {
+    form = `<form method="post" action="/app/${app.id}/update" class="inline">
+      <input name="image_tag" required pattern="v?\\d+\\.\\d+\\.\\d+" title="release tag like 1.2.3" value="${esc(avail || "")}" placeholder="1.2.3">
+      <button class="btn primary" type="submit">Update now</button>
+    </form>`;
+  }
+
+  return `<section class="panel updates">
+    <h3>Updates <span class="period">${esc(app.upstream_repo)}</span></h3>
+    ${updateAvailable ? `<p class="flash info">Update available: <strong>${esc(avail)}</strong></p>` : ""}
+    <dl class="meta">
+      <dt>Current version</dt><dd>${cur ? esc(cur) : `not yet tracked by the portal <small>(the committed tfvars in the platform repo is the record)</small>`}</dd>
+      <dt>Latest upstream release</dt><dd>${avail ? esc(avail) : "-"} <small>${esc(checked)}</small></dd>
+    </dl>
+    ${form}
+    <p class="note">Image-only update: the workflow mirrors the release into Artifact Registry, rolls the Cloud Run service (rolling back if the new revision is unhealthy), and commits the tag bump to the platform repo. Recurring updates live in the Schedules panel.</p>
+  </section>`;
+}
+
+export function schedulesPanel({ app, schedules, perms, email, tokenOk }) {
+  const canScheduleDeploy = !!app.repo && app.ever_deployed && app.status !== "archived" && perms.canRedeploy();
+  const canScheduleUpdate = !!app.upstream_repo && app.status !== "archived" && perms.platformAdmin;
+  if (!canScheduleDeploy && !canScheduleUpdate) return "";
+
+  const rows = (schedules || []).map((s) => scheduleRow(app, s, perms, email)).join("");
+  const table = rows
+    ? `<table class="schedules"><thead><tr><th>What</th><th>Schedule</th><th>Next fire</th><th>Last fired</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+    : `<p class="nodata">No schedules.</p>`;
+  const forms = tokenOk
+    ? `${canScheduleDeploy ? scheduleForm(app, "deploy") : ""}
+       ${canScheduleUpdate ? scheduleForm(app, "update", { availableVersion: app.available_version }) : ""}`
+    : `<p class="note">Dispatch token not configured; scheduling is unavailable.</p>`;
+  return `<section class="panel schedules-panel">
+    <h3>Schedules</h3>
+    ${table}
+    ${forms}
+    <p class="note">The scheduler runs every few minutes; a one-off fires within about 5 minutes of its time. Recurring crons are evaluated in UTC; times display in your zone. Fires are re-authorized against the creator's current permissions.</p>
+  </section>`;
+}
+
+export function cardDetail({ app, perms, admins, deployments, schedules, cost, usage, deployEnabled, deployNote, logsView, backupsView, tokenOk }) {
   const isFirstDeploy = app.status === "registered";
   const canDeploy = isFirstDeploy ? perms.canFirstDeploy() : perms.canRedeploy();
   const deployLabel = isFirstDeploy ? "Deploy (first deploy / approve)" : "Redeploy";
@@ -287,7 +567,11 @@ export function cardDetail({ app, perms, admins, deployments, cost, usage, deplo
 
   const activeDep = deployments.find((d) => d.status === "dispatched" || d.status === "running");
   const deployBtn = () => {
-    if (linkOnly) return `<p class="note">Link-only card (no repo): platform-managed, no deploy button.</p>`;
+    if (linkOnly) {
+      return app.upstream_repo
+        ? `<p class="note">Platform-managed app: updated via the Updates panel below, not deployed from a repo.</p>`
+        : `<p class="note">Link-only card (no repo): platform-managed, no deploy button.</p>`;
+    }
     if (!canDeploy) {
       return isFirstDeploy
         ? `<p class="note">First deploy is a platform-admin action (the vetting gate).</p>`
@@ -318,7 +602,7 @@ export function cardDetail({ app, perms, admins, deployments, cost, usage, deplo
   </dl>`;
 
   const depTable = deployments.length
-    ? `<table class="deployments"><thead><tr><th>When</th><th>Ref</th><th>SHA</th><th>Status</th></tr></thead><tbody>${deployments.map(deploymentRow).join("")}</tbody></table>`
+    ? `<table class="deployments"><thead><tr><th>When</th><th>Kind</th><th>Ref</th><th>SHA</th><th>Status</th></tr></thead><tbody>${deployments.map(deploymentRow).join("")}</tbody></table>`
     : `<p class="nodata">No deployments recorded.</p>`;
 
   // Admin controls (edit / archive / admins / owner transfer) shown per entitlement.
@@ -359,8 +643,11 @@ export function cardDetail({ app, perms, admins, deployments, cost, usage, deplo
   <div class="detail-head">${icon(app)}<h1>${esc(app.name)} ${statusBadge(app)}</h1></div>
   <p class="desc big">${esc(app.description || "")}</p>
   <div class="actions">${deployBtn()}${controls}</div>
+  ${app.upstream_repo && perms.platformAdmin ? updatePanel({ app, activeDep, tokenOk }) : ""}
   <section class="panel"><h3>Details</h3>${meta}</section>
   <section class="panel"><h3>Deployment history</h3>${depTable}</section>
+  ${backupsView ? backupsPanel({ app, view: backupsView, perms, tokenOk, activeDep }) : ""}
+  ${schedulesPanel({ app, schedules: schedules || [], perms, email: perms.email, tokenOk })}
   ${adminMgmt}
   ${showCostUsage ? costPanel(cost) : ""}
   ${showCostUsage ? usagePanel(usage) : ""}
@@ -732,13 +1019,13 @@ export function brandingSection({ name, tagline, icon }, saved) {
 // `coverage` the count of apps with snapshots.
 export function billingDataSection({ cost, usage, coverage }) {
   const costLine = cost
-    ? `<dd>${esc(shortTs(cost.captured_at))} <small>(${esc(ago(cost.captured_at))})</small></dd>`
+    ? `<dd>${timeEl(cost.captured_at)} <small>(${esc(ago(cost.captured_at))})</small></dd>`
     : `<dd class="nodata">no cost snapshot captured yet</dd>`;
   const periodLine = cost
     ? `<dd>${esc(cost.period_start)} to ${esc(cost.period_end)}</dd>`
     : `<dd class="nodata">-</dd>`;
   const usageLine = usage
-    ? `<dd>${esc(shortTs(usage.captured_at))} <small>(${esc(ago(usage.captured_at))})</small></dd>`
+    ? `<dd>${timeEl(usage.captured_at)} <small>(${esc(ago(usage.captured_at))})</small></dd>`
     : `<dd class="nodata">no usage snapshot captured yet</dd>`;
   const costApps = coverage ? coverage.cost_apps : 0;
   const usageApps = coverage ? coverage.usage_apps : 0;

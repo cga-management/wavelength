@@ -41,6 +41,42 @@ export async function deploymentsFor(appId, limit = 10) {
   return rows;
 }
 
+// The app's FULL deployment history, oldest first, for backup pairing: ordinals
+// ("deploy #n") are positions in this list, and the metadata github_run_id join /
+// timestamp fallback both need every row, not the display page's last 10.
+export async function allDeployments(appId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM deployments WHERE app_id = $1 ORDER BY created_at ASC, id ASC`,
+    [appId],
+  );
+  return rows;
+}
+
+// Distinct previously-successful heads for the pinned-deploy picker, newest first: one
+// row per sha (its most recent successful deploy) so the picker never repeats a head.
+export async function successfulDeployShas(appId) {
+  const { rows } = await pool.query(
+    `SELECT sha, ref, created_at FROM (
+       SELECT DISTINCT ON (sha) sha, ref, created_at FROM deployments
+       WHERE app_id = $1 AND kind = 'deploy' AND status = 'success' AND sha IS NOT NULL
+       ORDER BY sha, created_at DESC
+     ) heads ORDER BY created_at DESC`,
+    [appId],
+  );
+  return rows;
+}
+
+// Server-side validation for a pinned deploy: the sha must appear in THIS app's history
+// as a successful deploy. Anything else in the form post is rejected.
+export async function shaDeployedSuccessfully(appId, sha) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM deployments
+     WHERE app_id = $1 AND kind = 'deploy' AND status = 'success' AND sha = $2 LIMIT 1`,
+    [appId, sha],
+  );
+  return rows.length > 0;
+}
+
 export async function latestDeployment(appId) {
   const { rows } = await pool.query(
     `SELECT * FROM deployments WHERE app_id = $1 ORDER BY created_at DESC LIMIT 1`,
@@ -49,9 +85,10 @@ export async function latestDeployment(appId) {
   return rows[0] || null;
 }
 
-// Apps whose LATEST deployment is still non-terminal (dispatched/running) and that have a
-// repo to deploy. Used by the grid to refresh only those cards on view (bounded set,
-// almost always 0 or 1), so a finished deploy flips the card without opening Details.
+// Apps whose LATEST deployment is still non-terminal (dispatched/running) and that can
+// have one: repo-bearing apps (deploys) and platform-updatable apps (updates). Used by
+// the grid to refresh only those cards on view (bounded set, almost always 0 or 1), so
+// a finished run flips the card without opening Details.
 export async function appsWithPendingDeployment() {
   const { rows } = await pool.query(
     `SELECT a.* FROM apps a
@@ -59,7 +96,8 @@ export async function appsWithPendingDeployment() {
        SELECT status FROM deployments d WHERE d.app_id = a.id
        ORDER BY d.created_at DESC LIMIT 1
      ) latest ON true
-     WHERE a.repo IS NOT NULL AND latest.status IN ('dispatched', 'running')`,
+     WHERE (a.repo IS NOT NULL OR a.upstream_repo IS NOT NULL)
+       AND latest.status IN ('dispatched', 'running')`,
   );
   return rows;
 }
@@ -229,22 +267,37 @@ export async function editMetadata(actor, app, fields) {
 }
 
 // Record a dispatched deployment and flip a first deploy to 'deployed'. Returns the
-// deployment row so the caller can locate its run later.
-export async function recordDispatch(actor, app, ref, { firstDeploy }) {
+// deployment row so the caller can locate its run later. kind 'deploy' rows carry a git
+// ref; kind 'platform_update' rows carry the image tag and kind 'restore' rows the
+// backup object path in the same column (sha stays NULL for restores). scheduleId
+// marks a fire of a deploy_schedules row (dispatched_by stays the schedule's creator,
+// whose authority the scheduler re-verified at fire time). pinned marks a deploy of a
+// previously-successful exact sha (the "deploy a previous head" action).
+export async function recordDispatch(actor, app, ref, { firstDeploy = false, kind = "deploy", scheduleId = null, pinned = false }) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const { rows } = await client.query(
-      `INSERT INTO deployments (app_id, ref, dispatched_by, status) VALUES ($1,$2,$3,'dispatched') RETURNING *`,
-      [app.id, ref, actor],
+      `INSERT INTO deployments (app_id, ref, dispatched_by, status, kind, schedule_id)
+       VALUES ($1,$2,$3,'dispatched',$4,$5) RETURNING *`,
+      [app.id, ref, actor, kind, scheduleId],
     );
     const dep = rows[0];
     // Deliberately NOT flipping apps.status here: the dispatch 204 means accepted,
     // not succeeded (docs/portal.md). The card flips to 'deployed' only when the
     // run's status poll reports success (updateDeploymentStatus).
+    const action = kind === "platform_update"
+      ? (scheduleId ? "app.update.scheduled" : "app.update.dispatch")
+      : kind === "restore"
+        ? "app.db.restore"
+        : (scheduleId ? "app.deploy.scheduled" : firstDeploy ? "app.deploy.first" : pinned ? "app.deploy.pinned" : "app.deploy.redeploy");
+    const detail = kind === "restore"
+      ? { slug: app.slug, object: ref }
+      : scheduleId ? { slug: app.slug, ref, schedule_id: scheduleId } : { slug: app.slug, ref };
     await audit(client, {
-      actor, action: firstDeploy ? "app.deploy.first" : "app.deploy.redeploy",
-      subjectType: "deployment", subjectId: dep.id, detail: { slug: app.slug, ref },
+      actor, action,
+      subjectType: "deployment", subjectId: dep.id,
+      detail,
     });
     await client.query("COMMIT");
     return dep;
@@ -267,10 +320,131 @@ export async function updateDeploymentStatus(depId, { runId, status, sha, finish
   if (status === "success") {
     await pool.query(
       `UPDATE apps SET status='deployed', ever_deployed=true, updated_at=now()
-       WHERE id = (SELECT app_id FROM deployments WHERE id=$1) AND status <> 'archived'`,
+       WHERE id = (SELECT app_id FROM deployments WHERE id=$1 AND kind='deploy') AND status <> 'archived'`,
+      [depId],
+    );
+    // A successful platform update records the tag the portal rolled. The committed
+    // tfvars in the platform repo remains the version-of-record; this is display state.
+    await pool.query(
+      `UPDATE apps SET current_version = d.ref, updated_at=now()
+       FROM deployments d WHERE d.id=$1 AND d.kind='platform_update' AND apps.id = d.app_id`,
       [depId],
     );
   }
+}
+
+// A deleted dump leaves exactly one trace: this audit row (who, which app, which
+// object). The delete itself happens in backups.deleteObject - GCS holds no registry
+// row to mutate, so this is an audit-only transaction.
+export async function recordBackupDeleted(actor, app, object) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await audit(client, {
+      actor, action: "backup.delete", subjectType: "backup", subjectId: object,
+      detail: { slug: app.slug, object },
+    });
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// --- Deploy schedules ---------------------------------------------------------
+
+export async function schedulesFor(appId) {
+  const { rows } = await pool.query(
+    `SELECT * FROM deploy_schedules WHERE app_id = $1 AND status <> 'cancelled'
+     ORDER BY (status = 'active') DESC, next_fire_at ASC, created_at DESC`,
+    [appId],
+  );
+  return rows;
+}
+
+export async function getSchedule(id) {
+  const { rows } = await pool.query(`SELECT * FROM deploy_schedules WHERE id = $1`, [id]);
+  return rows[0] || null;
+}
+
+// Create a schedule row. nextFireAt is computed by the caller (run_at for a one-off,
+// cron.nextFire for recurring) so this module stays free of cron logic.
+export async function createSchedule(actor, app, { kind, cadence, runAt, cron, payload, nextFireAt }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `INSERT INTO deploy_schedules (app_id, kind, cadence, run_at, cron, next_fire_at, payload, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [app.id, kind, cadence, runAt || null, cron || null, nextFireAt, JSON.stringify(payload || {}), actor],
+    );
+    const sched = rows[0];
+    await audit(client, {
+      actor, action: "schedule.create", subjectType: "schedule", subjectId: sched.id,
+      detail: { slug: app.slug, kind, cadence, cron: cron || undefined, run_at: runAt || undefined },
+    });
+    await client.query("COMMIT");
+    return sched;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function cancelSchedule(actor, app, schedule) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `UPDATE deploy_schedules SET status='cancelled', updated_at=now() WHERE id=$1 AND status='active'`,
+      [schedule.id],
+    );
+    await audit(client, {
+      actor, action: "schedule.cancel", subjectType: "schedule", subjectId: schedule.id,
+      detail: { slug: app.slug, kind: schedule.kind },
+    });
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// Disable (not delete) a schedule the scheduler refused to fire, with a visible reason.
+// A silently skipped schedule would re-skip every fire forever, invisibly; a disabled
+// one shows in the UI with why. Actor is 'system' - the scheduler made the call.
+export async function disableSchedule(schedule, reason) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `UPDATE deploy_schedules SET status='disabled', disabled_reason=$2, updated_at=now() WHERE id=$1`,
+      [schedule.id, reason],
+    );
+    await audit(client, {
+      actor: "system", action: "schedule.disabled", subjectType: "schedule", subjectId: schedule.id,
+      detail: { reason, created_by: schedule.created_by, kind: schedule.kind },
+    });
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function setScheduleResult(scheduleId, result) {
+  await pool.query(
+    `UPDATE deploy_schedules SET last_result=$2, updated_at=now() WHERE id=$1`,
+    [scheduleId, result],
+  );
 }
 
 export async function setArchive(actor, app, { archived, reason }) {

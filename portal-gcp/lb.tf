@@ -1,7 +1,7 @@
 # Front the portal with the shared external HTTPS LB + IAP perimeter. ONE hostname
 # (e.g. portal.labs.example.com), IAP-gated, Cloud Armor sso-default (human host). The portal
 # reads the user from the IAP JWT it verifies (unlike outline, which runs its own OIDC),
-# so this is a true archetype-A app: the LB backend's numeric id becomes the IAP audience
+# so this is a true identity-A app: the LB backend's numeric id becomes the IAP audience
 # the portal checks (two-phase; see computed_iap_audience in outputs.tf).
 #
 # The IAP OAuth client secret lives in Secret Manager (created by ../iac/gcp-org/); read

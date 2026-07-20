@@ -12,8 +12,9 @@
 # This SA is scoped no wider than the shared SA it replaces: it re-declares the same three
 # roles the portal actually used (cloudsql.client, artifactregistry.reader, and secret
 # access - but tightened to the TWO portal secrets rather than the shared SA's project-wide
-# secretAccessor), plus the single new logging.viewer. Nothing the shared SA holds is
-# removed - tenant apps keep using it.
+# secretAccessor), plus the new grants that land here alone: logging.viewer, and the
+# Backups panel's cloudsql.viewer and bucket-scoped storage.objectAdmin below. Nothing the
+# shared SA holds is removed - tenant apps keep using it.
 resource "google_service_account" "portal" {
   account_id   = "id-${var.workload}-portal"
   display_name = "Wavelength admin portal runtime"
@@ -26,6 +27,29 @@ resource "google_service_account" "portal" {
 resource "google_project_iam_member" "portal_logging_viewer" {
   project = var.project_id
   role    = "roles/logging.viewer"
+  member  = "serviceAccount:${google_service_account.portal.email}"
+}
+
+# Backups panel, grant 1 of 2 (docs/portal.md "Backups"): list and read object metadata so
+# the panel can render each app's pre-deploy dumps, delete so platform admins can remove
+# one (hygiene; the bucket's 30-day lifecycle rule is the primary deleter). objectAdmin on
+# this single bucket DELIBERATELY - never project-wide storage - so the portal can touch
+# pre-deploy dumps and no other object in the project. It still cannot run a Cloud SQL
+# import/export against a dump: restores stay in CI (restore-app-db.yml) under the
+# federated identity.
+resource "google_storage_bucket_iam_member" "portal_pre_deploy_bucket" {
+  bucket = local.lz.db_pre_deploy_bucket
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.portal.email}"
+}
+
+# Backups panel, grant 2 of 2: read-only Cloud SQL metadata (backup schedule, PITR,
+# deletion protection) for the instance-protection status line. Same shape as the
+# logging.viewer grant above: project-scoped because Cloud SQL IAM has no per-instance
+# scope, read-only, and it carries no import, export, or data capability.
+resource "google_project_iam_member" "portal_cloudsql_viewer" {
+  project = var.project_id
+  role    = "roles/cloudsql.viewer"
   member  = "serviceAccount:${google_service_account.portal.email}"
 }
 

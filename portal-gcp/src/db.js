@@ -147,8 +147,65 @@ const MIGRATIONS = [
      UNIQUE (slug, "window", captured_at)
    )`,
 
+  // Platform-updatable apps (docs/portal.md): a non-NULL upstream_repo marks a
+  // platform-managed card whose new releases the scheduler watches and whose image the
+  // portal can roll via update-platform-app.yml (image-only; the committed tfvars in the
+  // platform repo stays the version-of-record). One nullable column both marks the
+  // capability and carries the datum the release check needs - no slug inference.
+  `ALTER TABLE apps ADD COLUMN IF NOT EXISTS upstream_repo text`,
+  // Last tag the PORTAL successfully rolled (NULL until the first portal-driven update).
+  `ALTER TABLE apps ADD COLUMN IF NOT EXISTS current_version text`,
+  // Latest upstream release seen by the scheduler's weekly check.
+  `ALTER TABLE apps ADD COLUMN IF NOT EXISTS available_version text`,
+  `ALTER TABLE apps ADD COLUMN IF NOT EXISTS version_checked_at timestamptz`,
+
+  // Deploy schedules: one-off (run_at) and recurring (cron, UTC) rows for both kinds of
+  // action. next_fire_at is the single claim key the scheduler tick selects on; the
+  // tick advances it (or completes a one-off) BEFORE dispatching, so a crash mid-fire
+  // loses at most one fire and can never double-dispatch. auto_update is an inert
+  // forward-compatibility flag (recurring platform_update follows the latest release) -
+  // rendered, never yet honored.
+  `CREATE TABLE IF NOT EXISTS deploy_schedules (
+     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+     app_id          bigint NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+     kind            text NOT NULL CHECK (kind IN ('deploy', 'platform_update')),
+     cadence         text NOT NULL CHECK (cadence IN ('once', 'recurring')),
+     run_at          timestamptz,
+     cron            text,
+     next_fire_at    timestamptz NOT NULL,
+     payload         jsonb NOT NULL DEFAULT '{}'::jsonb,
+     auto_update     boolean NOT NULL DEFAULT false,
+     created_by      text NOT NULL,
+     status          text NOT NULL DEFAULT 'active'
+                     CHECK (status IN ('active', 'completed', 'cancelled', 'disabled')),
+     disabled_reason text,
+     last_fired_at   timestamptz,
+     last_result     text,
+     created_at      timestamptz NOT NULL DEFAULT now(),
+     updated_at      timestamptz NOT NULL DEFAULT now(),
+     CHECK ((cadence = 'once' AND run_at IS NOT NULL) OR (cadence = 'recurring' AND cron IS NOT NULL))
+   )`,
+
+  // 'deploy' rows carry a git ref in deployments.ref; 'platform_update' rows carry the
+  // image tag there (renders naturally in the history table).
+  `ALTER TABLE deployments ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'deploy'
+     CHECK (kind IN ('deploy', 'platform_update'))`,
+  `ALTER TABLE deployments ADD COLUMN IF NOT EXISTS schedule_id bigint REFERENCES deploy_schedules(id) ON DELETE SET NULL`,
+
+  // 'restore' joins the kind enum exactly as 'platform_update' did: another kind whose
+  // payload rides the existing ref column ('restore' rows store the backup object path
+  // there, sha NULL). The inline CHECK above only applies on a fresh install (ADD COLUMN
+  // IF NOT EXISTS is a no-op once the column exists), so widening the enum on existing
+  // instances means dropping and re-adding Postgres's auto-named constraint - the pair
+  // is idempotent and safe to run on every cold start.
+  `ALTER TABLE deployments DROP CONSTRAINT IF EXISTS deployments_kind_check`,
+  `ALTER TABLE deployments ADD CONSTRAINT deployments_kind_check
+     CHECK (kind IN ('deploy', 'platform_update', 'restore'))`,
+
   `CREATE INDEX IF NOT EXISTS idx_app_admins_email ON app_admins (email)`,
   `CREATE INDEX IF NOT EXISTS idx_deployments_app ON deployments (app_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_schedules_due ON deploy_schedules (next_fire_at) WHERE status = 'active'`,
+  `CREATE INDEX IF NOT EXISTS idx_schedules_app ON deploy_schedules (app_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_cost_slug_period ON cost_snapshots (slug, period_end DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_usage_slug_window ON usage_snapshots (slug, "window", captured_at DESC)`,
 
@@ -216,6 +273,15 @@ export async function seed({ platformCards = [], bootstrapAdmin }) {
         `INSERT INTO app_admins (app_id, email, added_by) VALUES ($1, $2, 'system')
          ON CONFLICT DO NOTHING`,
         [rows[0].id, admin],
+      );
+    }
+    // Idempotent marker for platform-updatable cards: runs on every boot so EXISTING
+    // rows (seeded before the column existed) get it too, and never overwrites an
+    // operator-set value.
+    if (card.upstreamRepo) {
+      await pool.query(
+        `UPDATE apps SET upstream_repo = $2 WHERE slug = $1 AND upstream_repo IS NULL`,
+        [card.slug, card.upstreamRepo],
       );
     }
   }
