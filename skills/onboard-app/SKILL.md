@@ -40,7 +40,7 @@ launch.
    hold no in-process state between requests (use the shared DB, not local memory/Redis).
 2. **IAP handles authentication; the app takes the username from the IAP JWT.** Do NOT
    build a login/auth flow for a custom app - read the verified user out of the IAP header.
-   See `references/iap-identity.md`. (Exception: archetype B below.)
+   See `references/iap-identity.md`. (Exception: identity B below.)
 3. **A slice of the shared DB, isolated per user.** Your app gets one database on the shared
    instance. Because the local app probably was not built for multiple users, add
    **username-driven row-level security** so each user only sees their own rows, and resolve
@@ -61,6 +61,9 @@ launch.
    stdout/stderr to Cloud Logging automatically - do not write log files. Logs pool in a
    project-shared bucket (NOT isolated per app like the DB), so never log PII, secrets,
    tokens, or `DATABASE_URL`. See `references/logging.md`.
+7. **UTC at rest, local at the glass.** Store and compute timestamps in UTC; render every
+   human-facing timestamp in the viewer's timezone with the zone visible; label any cron
+   or schedule field with the zone it is evaluated in.
 
 **PII is deferred.** Onboarding is Stage 1 - the point is to get the data into the shared
 space for central review. A formal PII assessment / conformance is a later platform-side
@@ -68,13 +71,21 @@ Stage 1->2 promotion gate the operator runs, not a blocker for you here.
 
 ## Pick the archetype first
 
-- **A - Custom app inherits IAP (default).** The app has no real login of its own (or a
-  throwaway local one). Strip/skip its login and take the user from the IAP JWT. Use this
-  for the typical internal tool / CRUD app. Follow all steps below.
-- **B - App keeps its own auth, behind IAP (e.g. WordPress, Outline).** The app runs its
-  own login and you keep it; IAP is just an outer gate that blocks unauthenticated traffic.
-  You still do steps 1, 3 (shared DB), 4 (secrets), 5, and the deploy - but you do NOT wire
-  the IAP identity into the app's auth. See `references/archetypes.md` before choosing.
+An archetype is the full named combination (build mode, audience, identity, state); the
+identity choice (A/B/C) is made within it. Pick from the five in
+`references/archetypes.md` before touching code:
+
+- **Custom user app** (default): source-built, human users, identity A (inherit the IAP
+  identity; strip/skip the app's login). The typical internal tool / CRUD app - follow
+  all steps below.
+- **Packaged user app**: prebuilt image (e.g. WordPress), human users, identity B (the
+  app keeps its own login behind IAP). You still do steps 1, 3 (shared DB), 4 (secrets),
+  5, and the deploy - but you do NOT wire the IAP identity into the app's auth.
+- **Connector service**: called by an Anthropic MCP connector, not a browser; identity C
+  (connector OAuth). See `references/mcp-app.md` and `references/connector-oauth.md`.
+- **Internal service**: called only by sibling platform apps; no human route.
+- **Dual-audience app**: a human route AND a connector route, path-split (e.g. Outline
+  plus its MCP endpoint).
 
 ## Who does what (you need NO GCP access)
 
@@ -114,11 +125,11 @@ email (the deploying dev). They own `project_id`, `region`, `state_bucket`, and 
    an OPERATOR step), and creating/moving the repo private. See `references/github-setup.md`.
 1. **Understand the local app.** Find its entrypoint, framework, how it serves HTTP and on
    what port, how it talks to its DB, where it reads API keys, and whether it has a login.
-   Decide archetype A or B.
+   Decide the archetype, and the identity (A or B) within it.
 2. **Containerise.** Add a `Dockerfile` if there isn't one, and a committed `.env.example`
    (real `.env` gitignored). Bind to `0.0.0.0:$PORT` (Cloud Run sets `PORT`).
    See `references/deploy.md`.
-3. **Wire identity (archetype A).** Add the IAP-JWT middleware; make the app read the
+3. **Wire identity (identity A).** Add the IAP-JWT middleware; make the app read the
    current username from it and stop requiring its own login. `references/iap-identity.md`.
 4. **Point at the shared DB + add per-user isolation, applied by BOOT MIGRATIONS.** Read
    `DATABASE_URL` from the injected secret env. The app MUST apply its schema AND its RLS
@@ -149,8 +160,8 @@ email (the deploying dev). They own `project_id`, `region`, `state_bucket`, and 
    git grep -q "X-Goog-IAP-JWT-Assertion" -- ':!iac' && echo "OK identity middleware present"
    git grep -qi "CREATE TABLE IF NOT EXISTS" -- ':!iac' && echo "OK boot migration present (schema+RLS applied at startup)"
    ```
-   Every line must print OK (the identity line applies to archetype A only - skip it for
-   archetype B, which keeps its own auth). Then give the operator the deployed-copy
+   Every line must print OK (the identity-middleware line applies to identity A only -
+   skip it for identity B, which keeps its own auth). Then give the operator the deployed-copy
    API key value(s), and print the CARD JSON so the user can paste it straight into the
    platform portal's register form (the keys match the form fields exactly - fill in the
    real values):

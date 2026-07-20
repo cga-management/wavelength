@@ -1,0 +1,214 @@
+# Image-only update for a platform-managed app (Outline first).
+#
+# Platform-managed apps are operator-applied tofu stacks in THIS repo, not onboarded app
+# repos - deploy-app.yml cannot serve them (no Dockerfile to build; outline-gcp also
+# holds azuread/Entra resources CI cannot authenticate, so a full tofu apply stays a
+# supervised human action). But their routine lifecycle event is trivial: upstream ships
+# a release roughly monthly and the only change is the image tag. This workflow does
+# exactly that and nothing else:
+#
+#   1. mirror the upstream image into Artifact Registry (Cloud Run only pulls from AR);
+#   2. roll the Cloud Run service to it (gcloud, container-scoped), rolling back to the
+#      previous image if the new revision never becomes ready;
+#   3. commit the tag bump to the app's committed instance.auto.tfvars, so git stays the
+#      version-of-record and the next manual tofu apply agrees instead of reverting it.
+#      The commit uses THIS workflow's GITHUB_TOKEN (contents: write below) - the portal
+#      keeps its single actions:write token and never writes to the repo.
+#
+# Dispatched by the portal (POST /app/:id/update, or a deploy_schedules fire) with the
+# same PAT that dispatches deploy-app.yml. Adding the next platform app = one more
+# branch in the "Resolve the app" case below.
+
+name: update-platform-app
+# The portal locates this run by its name prefix "update <slug> " (github.js locateRun)
+# - the format below is a load-bearing contract, do not reword it.
+run-name: "update ${{ inputs.app_slug }} (${{ inputs.image_tag }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_slug:
+        description: "Platform app to update (known slugs only, e.g. outline)"
+        required: true
+      image_tag:
+        description: "Upstream release tag to roll to, e.g. 1.9.1 (no leading v)"
+        required: true
+      requested_by:
+        description: "Who asked for this update (for the commit message and summary)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # commit the tfvars bump back to this repo
+  id-token: write   # required for Workload Identity Federation
+
+# One update per app at a time, queued not cancelled (an update must run to completion;
+# a cancelled half-update could leave the service rolled but the tfvars not bumped).
+concurrency:
+  group: update-platform-${{ inputs.app_slug }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # Dispatch inputs are routed through env vars rather than interpolated into run:
+    # scripts with ${{ }} so a crafted input value is data, never shell (same hardening
+    # as deploy-app.yml - these fields arrive from the portal).
+    env:
+      REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
+      WORKLOAD: ${{ vars.GCP_WORKLOAD || 'wl' }}
+      ENVIRONMENT: ${{ vars.GCP_ENVIRONMENT || 'platform' }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      APP_SLUG: ${{ inputs.app_slug }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+      REQUESTED_BY: ${{ inputs.requested_by }}
+    steps:
+      - name: Resolve the app and validate the tag
+        # The slug map is a closed allowlist: everything downstream (upstream image,
+        # service name, tfvars file) comes from this step's exports, never from the raw
+        # input. The tag is pinned to strict x.y.z - the portal strips any leading "v"
+        # before dispatching.
+        run: |
+          set -euo pipefail
+          case "${APP_SLUG}" in
+            outline)
+              echo "UPSTREAM_IMAGE=docker.io/outlinewiki/outline" >> "$GITHUB_ENV"
+              echo "IMAGE_NAME=outline" >> "$GITHUB_ENV"
+              echo "SERVICE=${WORKLOAD}-outline-${ENVIRONMENT}" >> "$GITHUB_ENV"
+              echo "CONTAINER=outline" >> "$GITHUB_ENV"
+              echo "TFVARS_FILE=outline-gcp/instance.auto.tfvars" >> "$GITHUB_ENV"
+              echo "TFVARS_VAR=outline_image_tag" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "::error::unknown platform app slug '${APP_SLUG}' - this workflow updates a closed list of platform-managed apps (currently: outline)."
+              exit 1
+              ;;
+          esac
+          if ! [[ "${IMAGE_TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::image_tag '${IMAGE_TAG}' is invalid - expected a plain x.y.z release tag (no leading v)."
+            exit 1
+          fi
+
+      - name: Preflight - platform repo configuration
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${PROJECT_ID}" ]      || missing="${missing} GCP_PROJECT_ID"
+          [ -n "${WIF_PROVIDER}" ]    || missing="${missing} GCP_WIF_PROVIDER"
+          [ -n "${SERVICE_ACCOUNT}" ] || missing="${missing} GCP_SERVICE_ACCOUNT"
+          if [ -n "${missing}" ]; then
+            echo "::error::missing repo variable(s):${missing}. bootstrap.sh prints all of them - re-set them on this repo."
+            exit 1
+          fi
+
+      - name: Check out the platform repo
+        # Needed for the tfvars bump at the end. The default GITHUB_TOKEN suffices -
+        # this workflow only ever writes to its own repo.
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Mirror the upstream image into Artifact Registry
+        # Cloud Run only pulls from *.docker.pkg.dev; AR has no pull-through from Docker
+        # Hub wired here. The pull fails fast if the tag does not exist upstream - that
+        # is the "does this release exist" check.
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          AR_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/ar-${WORKLOAD}-${ENVIRONMENT}/${IMAGE_NAME}:${IMAGE_TAG}"
+          docker pull "${UPSTREAM_IMAGE}:${IMAGE_TAG}"
+          docker tag "${UPSTREAM_IMAGE}:${IMAGE_TAG}" "${AR_IMAGE}"
+          docker push "${AR_IMAGE}"
+          echo "AR_IMAGE=${AR_IMAGE}" >> "$GITHUB_ENV"
+
+      - name: Capture the current image (for rollback)
+        run: |
+          set -euo pipefail
+          PREV_IMAGE="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format=json \
+            | jq -r --arg c "${CONTAINER}" '.spec.template.spec.containers[] | select(.name == $c) | .image')"
+          if [ -z "${PREV_IMAGE}" ] || [ "${PREV_IMAGE}" = "null" ]; then
+            echo "::error::could not read the current '${CONTAINER}' container image from service '${SERVICE}'."
+            exit 1
+          fi
+          echo "PREV_IMAGE=${PREV_IMAGE}" >> "$GITHUB_ENV"
+          echo "Current image: ${PREV_IMAGE}"
+
+      - name: Roll the service to the new image (rollback on failure)
+        # gcloud run services update blocks until the new revision is Ready and exits
+        # nonzero if it never becomes healthy. Outline runs its DB migrations at boot,
+        # inside that readiness window - so a ready revision means migrations completed.
+        # On failure, restore the previous image as a fresh revision and fail the run.
+        run: |
+          set -euo pipefail
+          if ! gcloud run services update "${SERVICE}" --region "${REGION}" \
+               --container "${CONTAINER}" --image "${AR_IMAGE}"; then
+            echo "::error::update of ${SERVICE} to ${IMAGE_TAG} failed; rolling back to the previous image."
+            gcloud run services update "${SERVICE}" --region "${REGION}" \
+              --container "${CONTAINER}" --image "${PREV_IMAGE}"
+            exit 1
+          fi
+          # Belt and braces: the latest created revision must be the one serving.
+          READY="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.latestReadyRevisionName)')"
+          CREATED="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.latestCreatedRevisionName)')"
+          if [ "${READY}" != "${CREATED}" ]; then
+            echo "::error::latest created revision '${CREATED}' is not the ready one ('${READY}'); rolling back."
+            gcloud run services update "${SERVICE}" --region "${REGION}" \
+              --container "${CONTAINER}" --image "${PREV_IMAGE}"
+            exit 1
+          fi
+
+      - name: Commit the tfvars bump (version-of-record)
+        # Only after the new revision is serving. The committed instance.auto.tfvars is
+        # the version-of-record: without this commit the next manual tofu apply would
+        # roll the service back to the old tag. Pushes made with GITHUB_TOKEN do not
+        # trigger other workflows. Requires main to have no branch-protection rule that
+        # blocks pushes from Actions.
+        run: |
+          set -euo pipefail
+          if ! grep -Eq "^${TFVARS_VAR}[[:space:]]*=" "${TFVARS_FILE}"; then
+            echo "::error::${TFVARS_FILE} has no '${TFVARS_VAR} = ...' line to update - refusing to append blindly. Fix the file, then re-run."
+            exit 1
+          fi
+          sed -i -E "s|^${TFVARS_VAR}[[:space:]]*=.*|${TFVARS_VAR} = \"${IMAGE_TAG}\"|" "${TFVARS_FILE}"
+          if git diff --quiet -- "${TFVARS_FILE}"; then
+            echo "::notice::${TFVARS_VAR} already reads ${IMAGE_TAG} - nothing to commit (re-run of the same tag)."
+            exit 0
+          fi
+          git config user.name "wavelength-platform[bot]"
+          git config user.email "wavelength-platform[bot]@users.noreply.github.com"
+          git add "${TFVARS_FILE}"
+          BY="${REQUESTED_BY:-portal}"
+          git commit -m "${APP_SLUG}: update image tag to ${IMAGE_TAG} (portal update, requested by ${BY})"
+          # Retry the push a few times: the per-slug concurrency group serializes updates
+          # of the same app, but an unrelated push to main can still race this one.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "push attempt ${attempt} failed; rebasing and retrying"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+          done
+          echo "::error::could not push the tfvars bump after 3 attempts - the service IS updated to ${IMAGE_TAG}; commit the bump manually to realign the version-of-record."
+          exit 1
+
+      - name: Summary
+        run: |
+          set -euo pipefail
+          {
+            echo "### Updated ${APP_SLUG} to ${IMAGE_TAG}"
+            echo "- service: ${SERVICE} (${REGION})"
+            echo "- image: ${AR_IMAGE}"
+            echo "- previous image: ${PREV_IMAGE}"
+            echo "- version-of-record: ${TFVARS_FILE} (${TFVARS_VAR}), commit $(git rev-parse HEAD)"
+            echo "- requested by: ${REQUESTED_BY:-portal}"
+          } >> "$GITHUB_STEP_SUMMARY"

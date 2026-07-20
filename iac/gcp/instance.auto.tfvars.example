@@ -10,3 +10,7 @@ dns_zone_fqdn = "<DNS_ZONE_FQDN>" # e.g. labs.example.com.  (trailing dot requir
 # Org-policy guardrails need orgpolicy.policyAdmin and are org-level; a fresh org
 # already enforces a secure-by-default baseline. Leave off unless you hold policyAdmin.
 enable_org_policies = false
+
+# Platform email: sending domain you have verified with the email provider (e.g.
+# Resend). Apps send as <app-slug>@<this domain>. Leave "" if email is unused.
+email_from_domain = "" # e.g. apps.example.com

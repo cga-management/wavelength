@@ -16,3 +16,12 @@ resource "google_dns_managed_zone" "labs" {
   labels      = local.labels
   depends_on  = [google_project_service.apis]
 }
+
+# --- Platform email: sending-domain note ---------------------------------------
+# Resend has no shared-sender fallback: mail only sends from a domain verified in
+# the Resend account. The platform's sending domain (the email_from_domain output
+# in outputs.tf) is a pre-existing verified domain whose MX/SPF/DKIM records live
+# where THAT domain's DNS is managed - not in this zone. If the sending domain
+# ever moves under this zone, its verification records (MX + SPF TXT on
+# send.<domain>, DKIM TXT on resend._domainkey.<domain>, values issued by the
+# Resend dashboard) belong here as google_dns_record_set resources.

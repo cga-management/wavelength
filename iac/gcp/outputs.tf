@@ -60,6 +60,31 @@ output "replicate_secret_id" {
   value       = google_secret_manager_secret.replicate_api_key.secret_id
 }
 
+output "email_api_key_secret_id" {
+  description = "Secret Manager secret id for the operator-supplied shared email key (Resend). Same key is the SMTP password (username 'resend') and the REST API bearer token."
+  value       = google_secret_manager_secret.email_api_key.secret_id
+}
+
+output "email_smtp_host" {
+  description = "SMTP relay host for platform email. Provider-specific; a provider swap changes only these outputs plus a reseed of email-api-key."
+  value       = "smtp.resend.com"
+}
+
+output "email_smtp_port" {
+  description = "SMTP relay port (465 = implicit TLS; set the app's 'secure' flag on)."
+  value       = "465"
+}
+
+output "email_smtp_username" {
+  description = "SMTP username. For Resend this is the literal string 'resend'; the password is the email-api-key secret."
+  value       = "resend"
+}
+
+output "email_from_domain" {
+  description = "Verified sending domain (operator-supplied; its DNS is managed outside this zone). Convention: every app sends as <app-slug>@<this domain> (e.g. outline@...); platform@ is reserved for platform-level sends."
+  value       = var.email_from_domain
+}
+
 output "db_password_secret_id" {
   description = "Secret Manager secret id for the shared DB admin password."
   value       = google_secret_manager_secret.db_admin_password.secret_id

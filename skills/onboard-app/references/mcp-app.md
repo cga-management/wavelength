@@ -1,7 +1,8 @@
 # Exposing an MCP server (machine access from the Anthropic connector)
 
-This is the pattern the base skill defers as "out of scope" (SKILL.md guardrails,
-`archetypes.md`). Use it when the app must be reached by a **non-browser client** -
+This is the edge layer of identity C, the machine path the base skill defers as "out of
+scope" (SKILL.md guardrails, `archetypes.md`; the app-layer companion is
+`connector-oauth.md`). Use it when the app must be reached by a **non-browser client** -
 specifically an Anthropic MCP connector - rather than (or in addition to) humans in a
 browser. It is how the platform exposes MCP hosts (Outline's MCP endpoint is the live
 example).
@@ -72,7 +73,10 @@ discovery/register/token endpoints on that host.
 
 When the same app serves a browser UI (IAP-gated) and an MCP path (machine), keep the UI on
 an IAP route and **path-route the machine endpoints** to a second IAP-off backend on the same
-LB/IP/cert. This is exactly `outline-gcp/lb.tf` (lines 43-70):
+LB/IP/cert. The vendored `iap-lb` module supports this directly via `path_overrides`
+(`modules/iap-lb/variables.tf`); `outline-gcp/lb.tf` carries the two-hostname route pair
+this extends (this instance's Outline points its connector at the MCP hostname directly,
+so it does not need the overrides):
 
 ```hcl
 routes = [

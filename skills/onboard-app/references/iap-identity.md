@@ -2,7 +2,7 @@
 
 The shared load balancer runs **IAP** in front of your Cloud Run service. Every request
 that reaches your app has already been authenticated against the org SSO. Your app's job
-(archetype A) is: **verify the IAP JWT and read the user out of it** - IAP replaces your
+(identity A) is: **verify the IAP JWT and read the user out of it** - IAP replaces your
 login, session store, and password handling entirely.
 
 ## What IAP actually sends (verified on this platform, 2026-07-03)
@@ -99,7 +99,7 @@ def normalize_owner_email(raw: str) -> str:
   `X-Goog-Authenticated-User-*` headers are unverified convenience copies - fine for
   debugging, not a security boundary.
 
-## FastAPI snippet (archetype A)
+## FastAPI snippet (identity A)
 
 Dependencies - add ALL THREE to your requirements; each missing one fails differently
 and none of the failures name the missing package at request time:

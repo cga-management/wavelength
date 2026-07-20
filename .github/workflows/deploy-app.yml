@@ -139,12 +139,24 @@ jobs:
 
       - name: Preflight - the ref exists in the app repo
         # Fails fast with a clear message instead of the checkout action's cryptic git
-        # retry loop. commits/<ref> resolves a branch, tag, or sha alike.
+        # retry loop. commits/<ref> resolves a branch, tag, or sha alike - which is why
+        # the API (not git ls-remote) backs both branches below: a bare commit sha is
+        # not an advertised ref, so ls-remote would never find it, but the commits API
+        # resolves it fine, and actions/checkout accepts a sha as its ref.
         env:
           GH_TOKEN: ${{ secrets.APP_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          if ! gh api "repos/${APP_REPO}/commits/${APP_REF}" --jq .sha >/dev/null 2>&1; then
+          if [[ "${APP_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+            # Pinned commit sha (the portal's "deploy a previous head" action). Verify
+            # the exact commit exists in the app repo; the branch-flavoured error below,
+            # with its rename-to-main recipe, would only mislead here.
+            RESOLVED="$(gh api "repos/${APP_REPO}/commits/${APP_REF}" --jq .sha 2>/dev/null || true)"
+            if [ "${RESOLVED}" != "${APP_REF}" ]; then
+              echo "::error::commit '${APP_REF}' does not exist in ${APP_REPO}. A pinned-sha deploy needs the full 40-char sha of a commit still reachable in the app repo (a force-push or branch deletion can strand old heads)."
+              exit 1
+            fi
+          elif ! gh api "repos/${APP_REPO}/commits/${APP_REF}" --jq .sha >/dev/null 2>&1; then
             DEFAULT="$(gh api "repos/${APP_REPO}" --jq .default_branch 2>/dev/null || echo unknown)"
             echo "::error::ref '${APP_REF}' does not exist in ${APP_REPO} (default branch: '${DEFAULT}'). Fix the card's ref, or rename the app repo's branch to main (git branch -m master main; git push -u origin main; gh repo edit ${APP_REPO} --default-branch main)."
             exit 1
@@ -216,6 +228,63 @@ jobs:
           echo "Building ${IMAGE} from app/${CONTEXT_DIR} (Dockerfile at the context root)"
           docker build -t "${IMAGE}" "app/${CONTEXT_DIR}"
           docker push "${IMAGE}"
+
+      - name: Pre-migration DB export (rollback point)
+        # App migrations run when the new Cloud Run revision boots (during the tofu
+        # applies below), so this is the last moment the schema is untouched. Restoring
+        # an instance backup would roll back EVERY app on the shared Cloud SQL, hence a
+        # per-database export: if this app's migration goes bad, import just its dump.
+        # Runner IAM: needs cloudsql.instances.export (covered by the roles/cloudsql.admin
+        # grant in iac/bootstrap/gcp/bootstrap.sh). The object write itself is done by the
+        # INSTANCE service account, which iac/gcp grants roles/storage.objectAdmin on the
+        # export bucket.
+        run: |
+          set -euo pipefail
+          # App db name = slug with hyphens mapped to underscores (the onboard-app
+          # app-stack convention: Postgres identifiers use underscores).
+          DB_NAME="${APP_SLUG//-/_}"
+
+          INSTANCE="$(gcloud sql instances list --project "${PROJECT_ID}" \
+            --filter "name~^psql-${WORKLOAD}-shared" --format 'value(name)')"
+          if [ -z "${INSTANCE}" ] || [ "$(wc -l <<<"${INSTANCE}")" -ne 1 ]; then
+            echo "::error::expected exactly one psql-${WORKLOAD}-shared-* instance in ${PROJECT_ID}, found: '${INSTANCE}'"
+            exit 1
+          fi
+
+          # Same token derivation as iac/gcp/main.tf local.instance_id (and bootstrap.sh):
+          # sha1 of "<project_id>-<workload>", first 8 chars. Yields the exact bucket name
+          # the landing zone creates, with no storage list permission needed.
+          TOKEN="$(printf '%s' "${PROJECT_ID}-${WORKLOAD}" | sha1sum | cut -c1-8)"
+          BUCKET="${WORKLOAD}-db-pre-deploy-${TOKEN}"
+
+          # First deploy of an app: its stack has not created the database yet, so there
+          # is nothing to roll back to. Skip, do not fail.
+          if ! gcloud sql databases list --instance "${INSTANCE}" --project "${PROJECT_ID}" \
+              --format 'value(name)' | grep -Fxq "${DB_NAME}"; then
+            echo "Database ${DB_NAME} does not exist on ${INSTANCE} yet (first deploy of ${APP_SLUG}) - skipping export"
+            exit 0
+          fi
+
+          OBJECT="gs://${BUCKET}/pre-deploy/${APP_SLUG}/${IMAGE_TAG}-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+          echo "Exporting ${DB_NAME} to ${OBJECT}"
+          # Fail closed: an existing database with no fresh rollback point must not deploy,
+          # so a failed export fails the job before the tofu applies run.
+          # No --offload: serverless export pays a fixed multi-minute spin-up per run,
+          # which dwarfs the inline dump (seconds at current sizes). Reconsider offload
+          # only if an app's database grows enough for an inline dump to load the
+          # shared instance.
+          gcloud sql export sql "${INSTANCE}" "${OBJECT}" \
+            --database "${DB_NAME}" --project "${PROJECT_ID}"
+
+          # Stamp provenance onto the fresh dump. gcloud sql export cannot set object
+          # metadata at write time, so it is a post-stamp on the object just created.
+          # The portal joins github_run_id to its deployments table to pair each backup
+          # with the deploy that took it, and restore-app-db.yml is dispatched against
+          # these objects - an unstamped dump is unusable downstream, so a failed stamp
+          # fails the job (fail closed) even though the export itself succeeded.
+          DEPLOYED_SHA="$(git -C app rev-parse HEAD)"
+          gcloud storage objects update "${OBJECT}" --custom-metadata \
+            "deployed_sha=${DEPLOYED_SHA},deployed_ref=${APP_REF},github_run_id=${GITHUB_RUN_ID},app_slug=${APP_SLUG}"
 
       - name: Deploy the stack (tofu, two-phase for the IAP audience)
         # The stack directory comes from the user-typed context_dir, so it is addressed via

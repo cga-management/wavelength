@@ -25,3 +25,20 @@ resource "google_secret_manager_secret" "replicate_api_key" {
   }
   depends_on = [google_project_service.apis]
 }
+
+# Shared platform email key (Resend) - operator-supplied, same posture as above.
+# One key serves BOTH consumption styles: Resend's SMTP relay authenticates with
+# username "resend" and this key as the password (Outline uses this), and the same
+# key drives the Resend REST API for apps that prefer an SDK. Non-secret settings
+# (host, port, username, from-domain) are exposed as outputs; apps send as
+# <app-slug>@<email_from_domain> (see the onboard-app skill's secrets reference).
+# The sending domain is already verified in the Resend account; its DNS records
+# live where that domain is managed, not in this stack's zone (see dns.tf note).
+resource "google_secret_manager_secret" "email_api_key" {
+  secret_id = "email-api-key"
+  labels    = local.labels
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
