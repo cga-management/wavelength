@@ -231,6 +231,41 @@ resource "google_cloud_run_v2_service" "outline" {
         name  = "OIDC_SCOPES"
         value = var.oidc_scopes
       }
+
+      # --- Email: shared platform key (Resend) over SMTP ---
+      # Lights up invites and notification digests. Sender follows the platform
+      # convention <app-slug>@<email_from_domain>. The password IS the shared
+      # Resend API key (username is the literal "resend"); see iac/gcp/secrets.tf.
+      env {
+        name  = "SMTP_HOST"
+        value = local.lz.email_smtp_host
+      }
+      env {
+        name  = "SMTP_PORT"
+        value = local.lz.email_smtp_port
+      }
+      env {
+        name  = "SMTP_USERNAME"
+        value = local.lz.email_smtp_username
+      }
+      env {
+        name = "SMTP_PASSWORD"
+        value_source {
+          secret_key_ref {
+            secret  = local.lz.email_api_key_secret_id
+            version = "latest"
+          }
+        }
+      }
+      # Port 465 = implicit TLS.
+      env {
+        name  = "SMTP_SECURE"
+        value = "true"
+      }
+      env {
+        name  = "SMTP_FROM_EMAIL"
+        value = "outline@${local.lz.email_from_domain}"
+      }
     }
   }
 

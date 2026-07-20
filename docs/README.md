@@ -10,6 +10,8 @@ model, and the deploy dispatch contract (extending the deploy workflow of RFC #1
 deploy workflow (`.github/workflows/deploy-app.yml`) - one-time setup, dispatch inputs,
 per-app prerequisites, the hardening, and the two-phase IAP-audience apply;
 [cost-showback.md](cost-showback.md) defines per-app cost as three honestly-labelled
-tiers (attributed, apportioned, AI spend) fed by an out-of-process collector; and
+tiers (attributed, apportioned, AI spend) fed by an out-of-process collector;
 [usage-telemetry.md](usage-telemetry.md) defines aggregate-only usage metrics and the
-usage-drives-archive loop.
+usage-drives-archive loop; and [app-archetypes.md](app-archetypes.md) defines the app
+taxonomy - one platform contract, five archetypes as agent-side recipes, and the
+prebuilt-tenant, lifecycle, shared-state, and connector-identity decisions.

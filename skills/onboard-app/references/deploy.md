@@ -51,9 +51,9 @@ depend on it.
 ## Verification (browser only - no gcloud)
 
 - Once the cert is ACTIVE, browse `https://‹app›.‹subdomain›` -> you are bounced to the org
-  SSO sign-in (IAP), then land on the app. No app login prompt for archetype A.
+  SSO sign-in (IAP), then land on the app. No app login prompt for identity A.
 - **Identity:** the app acts as YOUR signed-in user (from the IAP JWT), with no login code
-  of its own (archetype A).
+  of its own (identity A).
 - **Isolation:** create a record; a second signed-in user cannot see it (username RLS).
 - **Admin:** you (owner) and anyone in `wl_admin.platform_admins` can see all records.
 - **Secrets:** the app's API key came from Secret Manager and differs from local.
@@ -62,7 +62,7 @@ depend on it.
 
 ## What this does NOT set up
 
-Public access, custom auth for archetype A, MCP/machine endpoints, or a real PII assessment /
+Public access, custom auth for identity-A apps, MCP/machine endpoints, or a real PII assessment /
 Stage-2 conformance promotion. Those are separate, deliberate follow-ups.
 
 ## Troubleshooting: a redeploy keeps failing with the SAME revision name

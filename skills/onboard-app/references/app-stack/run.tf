@@ -76,6 +76,18 @@ resource "google_cloud_run_v2_service" "app" {
       #   name = "OPENAI_API_KEY"
       #   value_source { secret_key_ref { secret = "myapp-openai-api-key", version = "latest" } }
       # }
+
+      # Platform email (shared, already provisioned - see ../secrets.md "Platform email"):
+      # nothing to seed, no IAM. Send ONLY as <app-slug>@<from domain>. SMTP shape:
+      # env { name = "SMTP_HOST",       value = local.lz.email_smtp_host }
+      # env { name = "SMTP_PORT",       value = local.lz.email_smtp_port }
+      # env { name = "SMTP_USERNAME",   value = local.lz.email_smtp_username }
+      # env {
+      #   name = "SMTP_PASSWORD"
+      #   value_source { secret_key_ref { secret = local.lz.email_api_key_secret_id, version = "latest" } }
+      # }
+      # env { name = "SMTP_FROM_EMAIL", value = "myapp@${local.lz.email_from_domain}" }
+      # Or use the same secret as RESEND_API_KEY for the Resend SDK/REST API.
     }
   }
 

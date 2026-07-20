@@ -67,6 +67,10 @@ the default `.` leaves root-layout app deploys exactly as before.
 - The app repo is private in the org and contains a root `Dockerfile` plus the `iac/`
   stack with `iap-lb` vendored in (onboard-app skill output).
 - Any API-key secrets seeded in Secret Manager, values supplied out of band.
+  Exception: outbound email needs no per-app secret - the platform provides a shared
+  Resend key (`email-api-key`) plus SMTP settings as landing-zone outputs; apps send
+  as `<app-slug>@<email_from_domain>` (see the skill's
+  [secrets.md](../skills/onboard-app/references/secrets.md), "Platform email").
 - No database carve-out: the app stack self-provisions its database, its own DB user,
   and the `<slug>-database-url` secret on the first apply (see the skill's
   `app-stack/database.tf`; one-time hardening SQL in
@@ -81,6 +85,11 @@ Each item below was added after its absence cost a real debugging session:
   immediately with the repo's actual default branch in the error and a concrete
   rename-to-main recipe - instead of the checkout action's cryptic git retry loop. A
   `master` vs `main` mismatch was the first thing a real third-party onboarding hit.
+  A `ref` that is a full 40-char commit sha is treated as a pinned commit (the portal's
+  "deploy a previous head" action): the same commits API verifies the exact sha exists
+  (a bare sha is not an advertised ref, so `git ls-remote` could never find it) and the
+  error message drops the rename recipe, which only makes sense for branch names.
+  Branch and tag refs behave exactly as before.
 - **Onboarded-repo preflight.** An app can be registered for deploy before it has been
   through the onboard-app skill at all. The workflow checks for the root `Dockerfile`
   and the vendored `iac/modules/iap-lb/main.tf`, and the error names the exact
@@ -102,6 +111,98 @@ and pushed to Artifact Registry (no Cloud Build dependency, only AR write on the
 identity), and it is tagged by the checked-out commit sha unless `image_tag` is given -
 a changing tag is what makes the IaC see a new image ref and roll a new revision; a
 static tag leaves updated code un-deployed.
+
+## The pre-migration database export
+
+Between the image push and the tofu applies, the workflow exports the app's own
+database - and only that one - to the landing zone's export bucket:
+
+```
+gs://<workload>-db-pre-deploy-<token>/pre-deploy/<slug>/<image_tag>-<utc timestamp>.sql.gz
+```
+
+App migrations run when the new Cloud Run revision boots, i.e. during the applies, so
+this is the last moment the schema is untouched. It exists because the shared Cloud SQL
+instance is the wrong rollback unit for a deploy: restoring an instance backup would
+roll back every app on it to recover one. The dump is the per-app rollback point;
+nightly instance backups + 7-day PITR (in `iac/gcp/database.tf`) cover the
+instance-level disaster story. Objects expire after 30 days - the dump is rollback
+insurance for the deploy that just happened, not an archive. Right after the export the
+workflow stamps custom metadata onto the object - `deployed_sha`, `deployed_ref`,
+`github_run_id`, `app_slug` - so the portal can join `github_run_id` to its deployments
+table and pair each backup with the deploy that took it (a failed stamp fails the job,
+because an anonymous dump is unusable downstream).
+
+Behaviour to know:
+
+- **First deploy of an app skips the export.** The app stack self-provisions its
+  database on the first apply, so before that there is nothing to dump; the step
+  probes for the database and logs the skip. Once the database exists, a failed
+  export **fails the job** before the applies run - an existing database with no
+  fresh rollback point must not deploy.
+- **The export runs on the instance, not serverless.** `--offload` was tried and
+  dropped: serverless export pays a fixed multi-minute spin-up per run, which dwarfs
+  the inline dump at current sizes. Reconsider it only if an app's database grows
+  enough for an inline dump to load the shared instance.
+- **No new credentials.** The CI identity's `roles/cloudsql.admin` (bootstrap) covers
+  the export call; the object write is performed by the Cloud SQL instance's own
+  service account, which the landing zone grants `roles/storage.objectAdmin` on the
+  bucket.
+
+To roll one app back from a dump (no other app is touched), use the
+`restore-app-db` workflow described in the next section. The raw command it wraps,
+for a fully manual restore:
+
+```sh
+gcloud sql import sql <instance> gs://<bucket>/pre-deploy/<slug>/<file>.sql.gz \
+  --database <slug with hyphens as underscores> --project <project>
+```
+
+Drop or recreate the damaged objects first if the import collides with them (the dump
+is plain SQL, it does not drop what it did not create).
+
+## Restoring a database from a pre-deploy export
+
+[`restore-app-db.yml`](../.github/workflows/restore-app-db.yml) is the operational
+wrapper around the import above: it restores one app's database - and only that one -
+from a pre-deploy dump. The portal is the normal dispatch surface (it lists an app's
+dumps, pairs each with its deploy via the `github_run_id` metadata, and lets platform
+admins trigger a restore); manual `workflow_dispatch` from the Actions tab is the
+fallback. Inputs: `app_slug`, `backup_object` (the object path relative to the bucket,
+e.g. `pre-deploy/myapp/abc123-20260717T080000Z.sql.gz`), and an optional
+`requested_by` for the summary.
+
+Step by step, the workflow:
+
+1. **Validates the inputs against a closed charset**, and anchors `backup_object` to
+   `pre-deploy/<slug>/...` for THIS run's slug - restoring app A from app B's dump is
+   rejected before any GCP call, as is any path traversal.
+2. **Preflights the repo variables and authenticates** via the same WIF identity as
+   `deploy-app.yml` - no new credentials.
+3. **Resolves the shared Cloud SQL instance and recomputes the bucket name** exactly
+   as the export step does (exactly-one instance check; sha1-token bucket derivation).
+4. **Verifies the backup object and the target database exist.** A missing object
+   usually means the 30-day lifecycle expired it; a missing database means the app has
+   never been deployed, which is an error - the restore will not create it.
+5. **Takes a safety export first**: the CURRENT database is dumped to
+   `pre-restore/<slug>/<utc>-before-restore.sql.gz` in the same bucket, stamped with
+   `reason=pre-restore`, `restored_from=<backup_object>` and `github_run_id`. This is
+   the guarantee the workflow is built around: if this export fails, the run fails
+   before the import touches anything - a restore never runs without a way back.
+6. **Imports the dump** with `gcloud sql import sql`, which blocks until done and
+   fails nonzero on error.
+7. **Rolls the app's Cloud Run service to a fresh revision** (a `wl-restore=<utc>`
+   label bump on `<workload>-<slug>-<environment>`, the app-stack naming convention).
+   The nudge exists because the restore changes the data under a running app: a fresh
+   revision re-runs the app's boot migrations against the restored data and drops
+   lingering connections holding stale state. If the service does not exist (or the
+   roll fails), the run warns loudly instead of failing - the data restore has already
+   succeeded by then, and the summary says so.
+
+The run name follows the same portal contract as the other dispatch workflows:
+`restore <slug> (<backup_object>)` - the portal locates the run it dispatched by the
+`restore <slug> ` prefix, so the format is load-bearing. Restores are serialized per
+slug (`concurrency.group: restore-<slug>`, queued not cancelled), like deploys.
 
 ## The two-phase IAP-audience apply
 

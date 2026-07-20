@@ -64,6 +64,37 @@ for `<app>` and stores it as a Secret Manager secret exactly like any other API 
 app's AI spend attributable in the gateway's usage log - a shared key collapses every
 app's model usage into one line and breaks per-app cost showback.
 
+## Platform email (shared)
+
+The platform provides a shared outbound-email capability (Resend) for notifications:
+invites, digests, alerts. Unlike your own API keys, there is **nothing to seed and no
+IAM step** - the key already exists as the `email-api-key` secret and the app runtime
+SA can read it. The landing zone exposes everything you need as outputs:
+
+| Output | Meaning |
+|---|---|
+| `email_api_key_secret_id` | Secret id of the shared key (SMTP password AND REST bearer token) |
+| `email_smtp_host` | SMTP relay host |
+| `email_smtp_port` | SMTP relay port (465, implicit TLS - set your client's secure flag) |
+| `email_smtp_username` | SMTP username (for Resend, the literal string `resend`) |
+| `email_from_domain` | The verified sending domain |
+
+Consume it either way, same key:
+- **SMTP**: standard mailer config from the outputs above, password via a
+  `secret_key_ref` env (copy the commented block in `app-stack/run.tf`).
+- **REST API / SDK**: inject the same secret as `RESEND_API_KEY` and use the Resend
+  SDK or `POST https://api.resend.com/emails`.
+
+**Sender convention (mandatory):** send only as `<app-slug>@<email_from_domain>`
+(e.g. `myapp@...`). Do not invent other local parts; `platform@` is reserved for
+platform-level sends. The slug-as-sender is what keeps mail attributable and
+filterable per app.
+
+**Budget:** the platform account is on Resend's free tier - 3,000 emails/month and a
+hard 100/day cap, shared across ALL apps. This is for notifications, not bulk mail or
+user-triggered fan-out. If your app needs real volume, raise it with the operator
+first.
+
 ## What is already handled for you
 
 - `DATABASE_URL` is provided as a secret env by your own stack's `database.tf`, created

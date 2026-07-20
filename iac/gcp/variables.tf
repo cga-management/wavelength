@@ -130,3 +130,9 @@ variable "db_admin_login" {
   description = "Cloud SQL administrator (Postgres) user."
   default     = "wladmin"
 }
+
+variable "email_from_domain" {
+  type        = string
+  description = "Verified sending domain in the email provider's account (its DNS is managed outside this zone). Convention: every app sends as <app-slug>@<this domain> (e.g. outline@...); platform@ is reserved for platform-level sends. Leave empty until the operator has verified a domain with the provider."
+  default     = ""
+}
