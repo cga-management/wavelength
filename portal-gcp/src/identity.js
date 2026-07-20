@@ -8,8 +8,10 @@
 // /subject/. No email-shaped claim => 403, never anonymous. Azure/AWS get their own
 // adapters later behind the same contract; the core never learns which is in play.
 
+import { createHmac } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { normalizeOwnerEmail } from "./db.js";
+import { log } from "./logger.js";
 
 const IAP_JWKS_URL = "https://www.gstatic.com/iap/verify/public_key-jwk";
 const IAP_ISSUER = "https://cloud.google.com/iap";
@@ -24,6 +26,41 @@ const IAP_AUDIENCE = process.env.IAP_AUDIENCE || "";
 const APP_ENV = process.env.APP_ENV || "platform";
 
 const jwks = createRemoteJWKSet(new URL(IAP_JWKS_URL));
+
+// Usage-telemetry auth line (iap-identity.md, "The usage-telemetry auth line"): one
+// structured wl.auth line per user per day, carrying the platform's chosen identity
+// token. Mode + salt are landing-zone config; hashed mode without a salt falls back to
+// email mode with ONE startup warning - telemetry fails open, auth never blocks on it.
+let USAGE_IDENTITY_MODE = process.env.USAGE_IDENTITY_MODE || "email";
+const USAGE_HASH_SALT = process.env.USAGE_HASH_SALT || "";
+if (USAGE_IDENTITY_MODE === "hashed" && !USAGE_HASH_SALT) {
+  log.warning("USAGE_IDENTITY_MODE=hashed but USAGE_HASH_SALT is empty - falling back to email mode");
+  USAGE_IDENTITY_MODE = "email";
+}
+
+const usageSeen = new Map(); // date string -> Set of tokens already emitted that day
+
+function usageToken(email) {
+  if (USAGE_IDENTITY_MODE === "hashed") {
+    return createHmac("sha256", USAGE_HASH_SALT).update(email).digest("hex").slice(0, 32);
+  }
+  return email;
+}
+
+// At most one line per user per day per instance (scale-to-zero resets are harmless,
+// the collector's DISTINCT dedupes across instances and restarts).
+function emitAuthLine(email) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (!usageSeen.has(today)) {
+    usageSeen.clear(); // the date rolled - drop yesterday's set
+    usageSeen.set(today, new Set());
+  }
+  const token = usageToken(email);
+  const seen = usageSeen.get(today);
+  if (seen.has(token)) return;
+  seen.add(token);
+  log.info("authenticated", { event: "wl.auth", user: token });
+}
 
 export class IdentityError extends Error {
   constructor(status, message) {
@@ -84,5 +121,7 @@ export async function resolveIdentity(req) {
     const wi = payload.workforce_identity || {};
     throw new IdentityError(403, `no email claim; keys=${Object.keys(payload).sort().join(",")} wi=${Object.keys(wi).sort().join(",")}`);
   }
-  return { email: normalizeOwnerEmail(email), sub: String(payload.sub || "") };
+  const normalized = normalizeOwnerEmail(email);
+  emitAuthLine(normalized); // usage-telemetry auth line, at most once per user per day
+  return { email: normalized, sub: String(payload.sub || "") };
 }

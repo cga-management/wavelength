@@ -147,6 +147,11 @@ const MIGRATIONS = [
      UNIQUE (slug, "window", captured_at)
    )`,
 
+  // Expand-only: the 30d per-app user list (docs/usage-telemetry.md). Populated by the
+  // collector only for the 30d window when the platform's usage_identity_mode is
+  // "email"; null in hashed mode and for every other window.
+  `ALTER TABLE usage_snapshots ADD COLUMN IF NOT EXISTS users jsonb`,
+
   // Platform-updatable apps (docs/portal.md): a non-NULL upstream_repo marks a
   // platform-managed card whose new releases the scheduler watches and whose image the
   // portal can roll via update-platform-app.yml (image-only; the committed tfvars in the

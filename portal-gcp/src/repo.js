@@ -120,8 +120,10 @@ export async function allLatestCosts() {
 }
 
 export async function usageFor(slug) {
+  // users is the 30d user list (email mode only; null otherwise) - fetched here because
+  // this feeds the app detail page, which the caller already gates on canSeeCostUsage().
   const { rows } = await pool.query(
-    `SELECT DISTINCT ON ("window") "window", unique_users, avg_users_per_day, requests, uptime_pct, captured_at
+    `SELECT DISTINCT ON ("window") "window", unique_users, avg_users_per_day, requests, uptime_pct, users, captured_at
      FROM usage_snapshots WHERE slug = $1 AND "window" IN ('48h','7d','30d')
      ORDER BY "window", captured_at DESC`,
     [slug],

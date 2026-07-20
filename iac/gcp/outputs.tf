@@ -125,6 +125,16 @@ output "telemetry_dataset_id" {
   value       = google_bigquery_dataset.telemetry.dataset_id
 }
 
+output "usage_identity_mode" {
+  description = "Platform posture for usage-telemetry identity tokens: 'email' or 'hashed'. App stacks and the portal inject it as USAGE_IDENTITY_MODE."
+  value       = var.usage_identity_mode
+}
+
+output "usage_hash_salt_secret_id" {
+  description = "Secret Manager secret id of the platform-wide usage-hash salt (read by app identity middleware only when usage_identity_mode is 'hashed')."
+  value       = google_secret_manager_secret.usage_hash_salt.secret_id
+}
+
 output "certificate_map_id" {
   description = "Certificate Manager certificate map id (projects/<p>/locations/global/certificateMaps/<name>). App LBs pass this to the iap-lb module's certificate_map input for instant wildcard TLS."
   value       = google_certificate_manager_certificate_map.wildcard.id

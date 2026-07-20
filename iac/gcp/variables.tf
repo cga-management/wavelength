@@ -136,3 +136,25 @@ variable "email_from_domain" {
   description = "Verified sending domain in the email provider's account (its DNS is managed outside this zone). Convention: every app sends as <app-slug>@<this domain> (e.g. outline@...); platform@ is reserved for platform-level sends. Leave empty until the operator has verified a domain with the provider."
   default     = ""
 }
+
+# --- Usage telemetry -----------------------------------------------------------
+# What identity token each app's wl.auth usage line carries (docs/usage-telemetry.md).
+# This is a PLATFORM POSTURE choice, made once here and consumed by every app stack
+# and the portal via the landing-zone outputs:
+#   "email"  (default) - the line carries the user's normalized email. The portal can
+#            then show WHO uses each app (a 30d user list), visible only to that app's
+#            admins and platform admins. Reasonable default for a small platform:
+#            every audience with log or dataset access can already see these emails
+#            through stronger paths (raw logs, an app's own admin mode).
+#   "hashed" - the line carries HMAC-SHA256(platform salt, normalized email), hex,
+#            truncated. Counts only; no user lists anywhere. The stricter posture,
+#            one variable flip away (redeploy apps to take effect).
+variable "usage_identity_mode" {
+  type        = string
+  description = "Identity token in app usage-telemetry auth lines: 'email' (counts + per-app WHO list for that app's admins and platform admins) or 'hashed' (keyed pseudonymous hash, counts only)."
+  default     = "email"
+  validation {
+    condition     = contains(["email", "hashed"], var.usage_identity_mode)
+    error_message = "usage_identity_mode must be 'email' or 'hashed'."
+  }
+}

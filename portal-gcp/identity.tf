@@ -83,3 +83,15 @@ resource "google_secret_manager_secret_iam_member" "portal_github_token" {
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.portal.email}"
 }
+
+# ... plus the landing zone's usage-hash salt (usage_identity_mode support, run.tf).
+# Tenant apps get this for free via the shared SA's project-wide secretAccessor; the
+# portal's dedicated SA is deliberately per-secret scoped, so the salt needs its own
+# explicit grant. count-guarded so the portal still plans against a landing zone that
+# predates the salt secret (the env is omitted too - see run.tf).
+resource "google_secret_manager_secret_iam_member" "portal_usage_hash_salt" {
+  count     = try(local.lz.usage_hash_salt_secret_id, null) != null ? 1 : 0
+  secret_id = local.lz.usage_hash_salt_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.portal.email}"
+}

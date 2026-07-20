@@ -183,15 +183,23 @@ export function costPanel(cost) {
   </section>`;
 }
 
-// Usage panel: aggregate-only (counts, never who). "no data yet" when empty.
+// Usage panel: counts per window, plus - email mode only - the 30d user list stored
+// with the snapshot (visible here only because the caller gates the whole panel on
+// canSeeCostUsage: this app's admins and platform admins). In hashed mode the users
+// column is null and the list simply never renders. "no data yet" when empty.
 export function usagePanel(usage) {
   const has = usage && Object.keys(usage).length > 0;
   if (!has) {
-    return `<section class="panel usage"><h3>Usage</h3><p class="nodata">No usage data yet. The collector aggregates LB and IAP logs once the sink has entries.</p></section>`;
+    return `<section class="panel usage"><h3>Usage</h3><p class="nodata">No usage data yet. The collector aggregates LB request logs and app auth lines once the sink has entries.</p></section>`;
   }
   const cell = (w, field) => (usage[w] && usage[w][field] !== null && usage[w][field] !== undefined ? esc(usage[w][field]) : "-");
+  const users30 = usage["30d"] && Array.isArray(usage["30d"].users) ? usage["30d"].users : null;
+  const usersBlock = users30 && users30.length > 0
+    ? `<div class="usage-users"><h4>Users <small>30d</small></h4>
+    <p class="users-list">${users30.map((u) => esc(u)).join(", ")}</p></div>`
+    : "";
   return `<section class="panel usage">
-    <h3>Usage <small>aggregate-only</small></h3>
+    <h3>Usage</h3>
     <table class="usage-table">
       <thead><tr><th></th><th>48h</th><th>7d</th><th>30d</th></tr></thead>
       <tbody>
@@ -201,6 +209,7 @@ export function usagePanel(usage) {
         <tr><td>Uptime %</td><td>${cell("48h","uptime_pct")}</td><td>${cell("7d","uptime_pct")}</td><td>${cell("30d","uptime_pct")}</td></tr>
       </tbody>
     </table>
+    ${usersBlock}
   </section>`;
 }
 

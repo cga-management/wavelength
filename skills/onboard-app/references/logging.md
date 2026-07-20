@@ -44,7 +44,12 @@ whole project, not just your app.
    `sub` "for logging only" (`iap-identity.md`). Because logs sit in the shared bucket, the
    email is PII-in-a-shared-space; the opaque `sub` gives the same traceability without
    spraying addresses across the project. Log the email only as a deliberate choice, never as
-   an accidental `console.log(user)`.
+   an accidental `console.log(user)`. **The ONE sanctioned exception** is the `wl.auth`
+   usage-telemetry line the identity middleware emits (`iap-identity.md`, "The
+   usage-telemetry auth line"): its `user` field carries whatever the platform's
+   `usage_identity_mode` dictates - the normalized email (default) or a keyed pseudonymous
+   hash - because it IS the platform's unique-user signal and is routed to a
+   retention-bounded telemetry dataset. Everywhere else this rule stands unchanged.
 6. **Audit privileged actions.** When a user activates break-glass, or performs a cross-user
    write under it (see `shared-db-rls.md`), emit a `WARNING` audit line carrying `event`, the
    actor's `sub`, and the supplied `reason` - but never the row contents. Break-glass is the

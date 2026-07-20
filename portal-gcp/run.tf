@@ -123,6 +123,32 @@ resource "google_cloud_run_v2_service" "portal" {
         value = var.platform_repo
       }
 
+      # Usage-telemetry identity mode (docs/usage-telemetry.md): the platform-wide
+      # posture chosen on the landing zone. Drives the portal's own wl.auth line AND
+      # whether the app-detail page shows the Users (30d) list. try() tolerates a
+      # landing zone that predates the output (defaults to email mode).
+      env {
+        name  = "USAGE_IDENTITY_MODE"
+        value = try(local.lz.usage_identity_mode, "email")
+      }
+
+      # Platform-wide usage-hash salt, read ONLY in hashed mode. The portal SA is
+      # per-secret scoped, so identity.tf grants it secretAccessor on exactly this
+      # landing-zone secret. Omitted entirely (dynamic) when the landing zone predates
+      # the salt secret; the identity layer then falls back to email mode.
+      dynamic "env" {
+        for_each = try(local.lz.usage_hash_salt_secret_id, null) != null ? [1] : []
+        content {
+          name = "USAGE_HASH_SALT"
+          value_source {
+            secret_key_ref {
+              secret  = try(local.lz.usage_hash_salt_secret_id, null)
+              version = "latest"
+            }
+          }
+        }
+      }
+
       # The deploy-dispatch token, wired only once a secret version is seeded (see
       # secrets.tf / var.github_token_wired). Absent -> Deploy button disabled.
       dynamic "env" {
@@ -140,14 +166,18 @@ resource "google_cloud_run_v2_service" "portal" {
     }
   }
 
-  # The revision mounts the two portal secrets as the DEDICATED portal SA and pulls the
-  # shared image, so the SA's secret bindings (and the version) must exist AND have
+  # The revision mounts the portal secrets as the DEDICATED portal SA and pulls the
+  # shared image, so the SA's secret bindings (and the versions) must exist AND have
   # propagated before Cloud Run's create-time access check runs - otherwise the first
   # revision under the new SA races the binding and fails "Permission denied on secret".
+  # The usage-hash salt binding is in the list for the same reason; the salt secret and
+  # its version themselves live in the landing zone (applied before this stack), so
+  # only the IAM member can be a depends_on here.
   depends_on = [
     google_secret_manager_secret_version.portal_database_url,
     google_secret_manager_secret_iam_member.portal_database_url,
     google_secret_manager_secret_iam_member.portal_github_token,
+    google_secret_manager_secret_iam_member.portal_usage_hash_salt,
     google_project_iam_member.portal_artifact_reader,
   ]
 }
