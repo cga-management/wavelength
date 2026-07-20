@@ -51,7 +51,10 @@ mechanical ones):
 - **No instance identifiers.** No org names, GCP project ids or numbers, tenant ids,
   billing accounts, real email addresses, or real hostnames. Use the template's
   placeholders: `<your-org>`, `example.com`, `labs.example.com`, `<pool>`,
-  `<PROJECT_ID>`.
+  `<PROJECT_ID>`. Where an example needs a concrete-looking value, use the blessed
+  ones the gate knows: `my-project-123456`, `123456789012` (project/org number),
+  `00000000-0000-0000-0000-000000000000` (UUID), `tfstate-<token>`,
+  `user@example.com`.
 - **No em or en dashes** - not the characters, not the HTML entities (`mdash`,
   `ndash`). Use a hyphen or a comma, or reword.
 - **IaC is formatted and valid.** `tofu fmt -check -recursive` and `tofu validate`
@@ -66,12 +69,16 @@ mechanical ones):
 Every PR runs [`.github/workflows/leak-gate.yml`](.github/workflows/leak-gate.yml),
 which greps the PR diff in two layers:
 
-1. **Generic checks, always on**: em/en dash characters and entities in added lines;
+1. **Format checks, always on**: em/en dash characters and entities in added lines;
    added non-example `*.auto.tfvars` files; added paths containing `.tfstate`,
    `.tfplan`, or `.terraform/`; `BEGIN ... PRIVATE KEY` blocks.
-2. **Private patterns, operator-supplied**: an extended regex held ONLY in the
-   `LEAK_PATTERNS` repo secret (so the identifiers being guarded never appear in this
-   public repo). When the secret is unset - as it is on forks - the step skips
-   silently and only the generic checks apply.
+2. **Instance-value checks, always on**: added lines that look like real config
+   rather than the template's placeholders - email addresses (other than
+   `example.com` ones), GCP project ids and 12-digit project/org numbers, billing
+   account ids, UUIDs, `tfstate-` bucket tokens, concrete workforce/workload pool
+   ids, and hostnames outside the template's placeholder domains. It is on you to
+   purge your instance's values before sending a PR; a PR that carries them will be
+   rejected. These checks are heuristics: if the gate flags a genuine false
+   positive, say so in the PR and the gate gets tuned.
 
 A leak-gate failure names the offending file and line; fix it and push again.

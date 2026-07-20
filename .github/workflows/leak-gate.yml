@@ -3,11 +3,14 @@ name: Leak gate
 # Greps every PR diff for things that must never enter the public template
 # (see CONTRIBUTING.md, "Acceptance criteria"). Two layers:
 #
-#   1. Generic checks, always on: typographic dashes, real tfvars, state/plan
+#   1. Format checks, always on: typographic dashes, real tfvars, state/plan
 #      files, private-key blocks.
-#   2. Private patterns: an extended regex held ONLY in the LEAK_PATTERNS repo
-#      secret, so the instance identifiers being guarded never appear in this
-#      public repo. Unset (e.g. on forks) => the step skips silently.
+#   2. Instance-value checks, always on: added lines carrying what looks like
+#      real, non-defaulted instance config - email addresses, GCP project
+#      ids/numbers, billing ids, UUIDs, state-bucket tokens, workforce pool
+#      ids, hostnames outside the template's placeholder set. The template
+#      ships only placeholders; contributors purge their own values before
+#      sending a PR, and anything value-shaped is grounds to reject it.
 #
 # Dependency-free by design: bash + git + grep/awk only.
 
@@ -57,7 +60,7 @@ jobs:
           echo "Diff: $(wc -l < "${GATE}/added-lines.txt") added lines," \
                "$(wc -l < "${GATE}/added-files.txt") added files."
 
-      - name: Generic checks (always on)
+      - name: Format checks (always on)
         run: |
           set -euo pipefail
           fail=0
@@ -116,24 +119,133 @@ jobs:
           fi
           echo "Generic checks clean."
 
-      - name: Private patterns (LEAK_PATTERNS repo secret)
-        # Secrets cannot be tested in an `if:` expression, so the secret is read
-        # into an env var and emptiness is tested in bash. The pattern value is
-        # never echoed; matches report file:line only.
-        env:
-          LEAK_PATTERNS: ${{ secrets.LEAK_PATTERNS }}
+      - name: Instance-value checks (always on)
+        # Heuristics for values that should have been a placeholder. Documented
+        # placeholder forms pass: example.com domains, @<...> emails, 123456
+        # id digits, the 123456789012 project number, the all-zero UUID.
         run: |
           set -euo pipefail
-          if [ -z "${LEAK_PATTERNS}" ]; then
-            echo "::notice::LEAK_PATTERNS secret is not set - private pattern scan skipped (expected on forks; operators set it per CONTRIBUTING.md)."
-            exit 0
-          fi
-          hits="$(grep -Ei -e "${LEAK_PATTERNS}" "${GATE}/added-lines.txt" || true)"
-          if [ -n "${hits}" ]; then
+          fail=0
+
+          annotate() { # $1 = message; stdin = matching "file:line:content" rows
             while IFS=: read -r f l _; do
-              echo "::error file=${f},line=${l}::matches a private leak pattern - replace the instance identifier with a placeholder (see CONTRIBUTING.md, Acceptance criteria)."
-            done <<< "${hits}"
-            echo "::error::Leak gate failed - the PR contains instance identifiers."
+              case "${l}" in
+                '' | *[!0-9]*) echo "::error file=${f}::${1} (see CONTRIBUTING.md, Acceptance criteria)" ;;
+                *) echo "::error file=${f},line=${l}::${1} (see CONTRIBUTING.md, Acceptance criteria)" ;;
+              esac
+            done
+          }
+
+          # Generated dependency metadata is hashes and registry URLs; skip it.
+          grep -Ev '^([^:]*/)?(package-lock\.json|package\.json|\.terraform\.lock\.hcl):' \
+            "${GATE}/added-lines.txt" > "${GATE}/checked-lines.txt" || true
+
+          # (e) email addresses that are not documentation placeholders.
+          hits="$(grep -E '[A-Za-z0-9._%+-]+@[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}' \
+            "${GATE}/checked-lines.txt" | grep -Ev '@example\.(com|org|net)|@<|@\$\{' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "real-looking email address - use user@example.com or @<...> placeholders" <<< "${hits}"
+          fi
+
+          # (f) 12-digit numbers = GCP project/org numbers. Hex boundaries keep
+          #     lock hashes and hex ids out; 123456789012 is the documented
+          #     placeholder for examples.
+          hits="$(grep -E '(^|[^0-9a-fA-F])[0-9]{12}([^0-9a-fA-F]|$)' \
+            "${GATE}/checked-lines.txt" | grep -Ev '123456789012|000000000000' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "12-digit number looks like a GCP project/org number - use 123456789012 in examples" <<< "${hits}"
+          fi
+
+          # (g) GCP-console-shaped project ids (name-123456); use -123456 digits
+          #     or <PROJECT_ID> in examples.
+          hits="$(grep -E '(^|[^0-9a-zA-Z_-])[a-z][a-z0-9-]*-[0-9]{6}([^0-9]|$)' \
+            "${GATE}/checked-lines.txt" | grep -v -- '-123456' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "looks like a real GCP project id - use <PROJECT_ID> or my-project-123456" <<< "${hits}"
+          fi
+
+          # (h) billing account ids.
+          hits="$(grep -E '[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}' "${GATE}/checked-lines.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "looks like a billing account id - use <BILLING_ACCOUNT>" <<< "${hits}"
+          fi
+
+          # (i) UUIDs (tenant ids, client ids); the all-zero UUID is the placeholder.
+          hits="$(grep -E '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' \
+            "${GATE}/checked-lines.txt" | grep -v '00000000-0000-0000-0000-000000000000' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "UUID looks like a real tenant/client id - use 00000000-0000-0000-0000-000000000000" <<< "${hits}"
+          fi
+
+          # (j) state bucket with a real token (the placeholder is tfstate-<token>).
+          hits="$(grep -E 'tfstate-[0-9a-f]{4,}' "${GATE}/checked-lines.txt" || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "state bucket carries a real token - write tfstate-<token>" <<< "${hits}"
+          fi
+
+          # (k) concrete workforce / workload identity pool ids (placeholders
+          #     start with < or a shell/tofu interpolation).
+          hits="$(grep -E '(workforcePools|workloadIdentityPools)/[a-zA-Z0-9]' \
+            "${GATE}/checked-lines.txt" | grep -Ev '(workforcePools|workloadIdentityPools)/(<|\$)' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "concrete identity pool id - use <pool>-style placeholders" <<< "${hits}"
+          fi
+
+          # (l) real-looking hostnames outside the template's placeholder set.
+          #     Code and stylesheets are skipped (JS/CSS property chains collide
+          #     hopelessly); token-level awk so an allowlisted domain on the
+          #     same row cannot mask a real one.
+          hits="$(grep -Ev '^[^:]*\.(js|mjs|cjs|css):' "${GATE}/checked-lines.txt" \
+            | awk '
+              BEGIN {
+                n = split("example.com example.org example.net example.internal " \
+                          "google.com googleapis.com gserviceaccount.com auth.cloud " \
+                          "gstatic.com github.com githubusercontent.com github.io " \
+                          "microsoft.com microsoftonline.com auth0.com " \
+                          "claude.com claude.ai anthropic.com resend.com " \
+                          "npmjs.org opentofu.org terraform.io hashicorp.com " \
+                          "apache.org pkg.dev run.app docker.io docker.com gcr.io " \
+                          "quay.io gmail.com", allow, " ")
+              }
+              {
+                row = $0
+                rest = row
+                bad = 0
+                while (match(rest, /([a-zA-Z0-9-]+\.)+(com|net|org|io|dev|app|ai|biz|cloud|uk)/)) {
+                  tok = substr(rest, RSTART, RLENGTH)
+                  after = substr(rest, RSTART + RLENGTH, 2)
+                  rest = substr(rest, RSTART + RLENGTH)
+                  # not a hostname: the match continues into a longer word, or
+                  # is an identifier chain (service.app.uri)
+                  if (after ~ /^[a-zA-Z0-9_-]/) continue
+                  if (after ~ /^\.[a-zA-Z0-9_]/) continue
+                  tok = tolower(tok)
+                  # single-label + code-collision TLD (google_sql_user.app) is a
+                  # resource reference, not a hostname
+                  if (tok ~ /^[a-z0-9-]+\.(app|ai|io|dev|cloud)$/) continue
+                  ok = 0
+                  for (i = 1; i <= n; i++) {
+                    a = allow[i]
+                    if (tok == a || substr(tok, length(tok) - length(a), length(a) + 1) == "." a) { ok = 1; break }
+                  }
+                  if (!ok) bad = 1
+                }
+                if (bad) print row
+              }' || true)"
+          if [ -n "${hits}" ]; then
+            fail=1
+            annotate "real-looking hostname - use the example.com placeholder domains" <<< "${hits}"
+          fi
+
+          if [ "${fail}" -ne 0 ]; then
+            echo "::error::Leak gate failed - the PR carries instance values; replace them with the documented placeholders and push again."
             exit 1
           fi
-          echo "Private pattern scan clean."
+          echo "Instance-value checks clean."
