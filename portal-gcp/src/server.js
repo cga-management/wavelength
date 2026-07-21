@@ -363,7 +363,7 @@ app.post("/app/:id/backups/restore", async (req, res, next) => {
     const app0 = await repo.getApp(req.params.id);
     if (!app0) return res.status(404).send(page403(req, "No such app."));
     const perms = await permsFor(email, app0);
-    if (!perms.canRestoreBackup()) return res.status(403).send(page403(req, "Restoring a backup is platform-admin only."));
+    if (!perms.canRestoreBackup()) return res.status(403).send(page403(req, "Restoring a backup is limited to this app's admins."));
     if (!backups.configured()) return res.status(503).send(page403(req, "Backups are not configured on this instance."));
     if (app0.status === "archived") return res.status(409).send(page403(req, "Restore the app before restoring its database."));
     if (!gh.tokenConfigured()) return res.status(503).send(page403(req, "Dispatch token not configured."));

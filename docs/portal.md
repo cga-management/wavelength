@@ -173,7 +173,7 @@ anything the client asserts. "App Admin" below means for that specific app.
 | View an app's cost and usage | no | yes (own app) | yes |
 | View portfolio cost and usage | no | no | yes |
 | View an app's backups (dumps + instance protection) | no | yes (own app) | yes |
-| Restore a backup (dispatch restore-app-db.yml) | no | no | yes |
+| Restore a backup (dispatch restore-app-db.yml) | no | yes | yes |
 | Delete a backup object | no | no | yes |
 | Deploy a pinned sha (any previous successful deploy) | no | no | yes |
 
@@ -337,9 +337,11 @@ export"), and the shared instance carries nightly backups plus 7-day PITR
 ([`iac/gcp/database.tf`](../iac/gcp/database.tf)). The Backups panel puts that material
 on the app card. For owners and app admins it is read-only reassurance: their app's
 dumps exist and the instance is protected. Platform admins additionally get three
-actions: restore a dump, delete a dump, and deploy a pinned sha. The authorization rows
+actions: restore a dump (app admins - it overwrites only that app's database and a
+safety export is taken first), delete a dump, and deploy a pinned sha. The authorization rows
 are in the table above - `view_backups` for owner / app admin / platform admin;
-`restore_backup`, `delete_backup`, and `deploy_pinned` for platform admins only.
+`restore_backup` for app admins; `delete_backup` and `deploy_pinned` for platform
+admins only.
 Restores and deletes are destructive and a pinned deploy bypasses "head of the card's
 ref", so all three sit at the same tier as archive.
 

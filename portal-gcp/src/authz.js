@@ -59,10 +59,12 @@ export async function permsFor(email, app) {
     canManageAppAdmins: () => platformAdmin,
     canManagePlatformAdmins: () => platformAdmin,
     canSeeCostUsage: () => appAdmin, // own app for app admins; all for platform admins
-    // Backups: the app's people get read-only reassurance (their dumps exist, the
-    // instance is protected); every ACTION on a backup is platform-admin only.
+    // Backups: the app's people see their dumps and the instance protection.
+    // RESTORE is an app-admin action (2026-07-21): it overwrites only the app's own
+    // database, and the workflow takes a fail-closed safety export first. DELETE
+    // and pinned-sha deploys stay platform-admin only.
     canViewBackups: () => appAdmin || owner, // appAdmin is true for platform admins
-    canRestoreBackup: () => platformAdmin,
+    canRestoreBackup: () => appAdmin,
     canDeleteBackup: () => platformAdmin,
     canDeployPinned: () => platformAdmin,
   };
