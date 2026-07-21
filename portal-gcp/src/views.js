@@ -124,10 +124,12 @@ export function grid(apps, ctx) {
   const cards = apps
     .map((app) => {
       const openable = app.status === "deployed" && app.hostname;
-      // The card itself is the launcher: the stretched title link opens the app.
-      // Management (edit, deploy, cost/usage) is the exception, tucked behind the
-      // small Details link. Non-openable cards fall back to the detail page.
+      // The card itself is the launcher: the stretched title link opens the app in
+      // a NEW TAB (the portal stays put as the launchpad). Management (edit, deploy,
+      // cost/usage) is the exception, tucked behind the small Details link.
+      // Non-openable cards fall back to the detail page, same tab (internal route).
       const primaryHref = openable ? `https://${esc(app.hostname)}` : `/app/${app.id}`;
+      const primaryTarget = openable ? ` target="_blank" rel="noopener"` : "";
       const details = openable ? `<a class="details" href="/app/${app.id}">Details &rarr;</a>` : "";
       const docs = safeDocsUrl(app.docs_url) ? `<a class="docs" href="${esc(app.docs_url)}" target="_blank" rel="noopener">Docs</a>` : "";
       // Platform-updatable card with a newer upstream release than the portal last
@@ -136,7 +138,7 @@ export function grid(apps, ctx) {
         && app.available_version !== app.current_version
         ? ` <span class="badge update">update available</span>` : "";
       return `<article class="card ${esc(app.status)}">
-        <div class="card-head">${icon(app)}<h2><a class="card-title" href="${primaryHref}">${esc(app.name)}</a> ${statusBadge(app)}${updateBadge}</h2></div>
+        <div class="card-head">${icon(app)}<h2><a class="card-title" href="${primaryHref}"${primaryTarget}>${esc(app.name)}</a> ${statusBadge(app)}${updateBadge}</h2></div>
         <p class="desc">${esc(app.description || "")}</p>
         <div class="card-foot"><span class="slug">${esc(app.slug)}</span>${docs}${details}</div>
       </article>`;
