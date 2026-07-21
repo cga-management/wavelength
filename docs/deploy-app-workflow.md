@@ -155,11 +155,15 @@ for a fully manual restore:
 
 ```sh
 gcloud sql import sql <instance> gs://<bucket>/pre-deploy/<slug>/<file>.sql.gz \
-  --database <slug with hyphens as underscores> --project <project>
+  --database <db> --user <db>_app --project <project>
 ```
 
-Drop or recreate the damaged objects first if the import collides with them (the dump
-is plain SQL, it does not drop what it did not create).
+(`<db>` is the slug with hyphens as underscores.) Dumps are exported with
+`--clean --if-exists`, so they DROP and recreate every object they contain and
+restore in place - but ONLY when imported as the user that owns the objects,
+hence `--user <db>_app` (Cloud SQL rejects the DROPs otherwise). Dumps exported
+before the `--clean` change are plain SQL: they do not drop what they did not
+create, and restoring one needs the damaged objects dropped or recreated first.
 
 ## Restoring a database from a pre-deploy export
 
