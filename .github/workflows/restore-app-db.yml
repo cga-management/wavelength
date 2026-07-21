@@ -194,8 +194,13 @@ jobs:
         run: |
           set -euo pipefail
           echo "Importing gs://${BUCKET}/${BACKUP_OBJECT} into ${DB_NAME} on ${INSTANCE}"
+          # --clean dumps DROP each object before recreating it, so the import must
+          # run as the user that OWNS the objects (Cloud SQL rejects the DROPs
+          # otherwise). Platform convention: the app database <db> is owned by its
+          # own user <db>_app (db-hardening / app-stack self-provisioning).
           gcloud sql import sql "${INSTANCE}" "gs://${BUCKET}/${BACKUP_OBJECT}" \
-            --database "${DB_NAME}" --project "${PROJECT_ID}" --quiet
+            --database "${DB_NAME}" --user "${DB_NAME}_app" \
+            --project "${PROJECT_ID}" --quiet
 
       - name: Roll the app to a fresh revision
         # A label bump forces a new revision so the app's boot migrations re-run
