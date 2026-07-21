@@ -273,8 +273,11 @@ jobs:
           # which dwarfs the inline dump (seconds at current sizes). Reconsider offload
           # only if an app's database grows enough for an inline dump to load the
           # shared instance.
+          # --clean --if-exists makes the dump restore-ready in place (DROP ... IF
+          # EXISTS before each CREATE): restore-app-db.yml imports into the still
+          # populated database, and a plain dump dies there on the first CREATE.
           gcloud sql export sql "${INSTANCE}" "${OBJECT}" \
-            --database "${DB_NAME}" --project "${PROJECT_ID}"
+            --database "${DB_NAME}" --project "${PROJECT_ID}" --clean --if-exists
 
           # Stamp provenance onto the fresh dump. gcloud sql export cannot set object
           # metadata at write time, so it is a post-stamp on the object just created.

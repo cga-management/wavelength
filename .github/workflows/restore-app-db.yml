@@ -171,8 +171,10 @@ jobs:
           STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
           SAFETY_OBJECT="gs://${BUCKET}/pre-restore/${APP_SLUG}/${STAMP}-before-restore.sql.gz"
           echo "Exporting current ${DB_NAME} to ${SAFETY_OBJECT}"
+          # --clean --if-exists: the safety dump must itself be restore-ready
+          # (same reasoning as the pre-deploy export in deploy-app.yml).
           gcloud sql export sql "${INSTANCE}" "${SAFETY_OBJECT}" \
-            --database "${DB_NAME}" --project "${PROJECT_ID}"
+            --database "${DB_NAME}" --project "${PROJECT_ID}" --clean --if-exists
           # Post-stamp, same as deploy-app.yml: gcloud sql export cannot set object
           # metadata at write time. An unstamped safety dump is still a valid rollback
           # point, but the metadata is part of this workflow's contract - fail closed.
